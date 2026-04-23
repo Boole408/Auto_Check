@@ -1,0 +1,11 @@
+node_modules
+dist
+.cache
+.env
+.env.local
+.env.*.local
+accounts.txt
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

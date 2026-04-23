@@ -1,0 +1,3 @@
+# 任选一种格式，每行一个账号。真实账号请保存为 accounts.txt，不要提交到仓库。
+# username,password
+# 账号：your_username，密码：your_password
