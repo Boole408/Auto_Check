@@ -1,7 +1,8 @@
 import express from "express";
-import { loadAccounts } from "../utils/accountLoader.js";
+import { loadAccounts, parseAccountsContent, saveAccounts } from "../utils/accountLoader.js";
 import {
   checkinAccount,
+  clearDashboardCache,
   getDashboard,
   isRateLimitError,
   startOrResumeCheckinQueue
@@ -79,12 +80,53 @@ router.post("/checkin-all", async (req, res, next) => {
 
     const scope = req.body?.scope === "failed" ? "failed" : "all";
     const result = await startOrResumeCheckinQueue(scope);
-    ok(res, result, scope === "failed" ? "失败账号重试队列已启动" : "签到队列已启动");
+    ok(res, result, result.message);
   } catch (error) {
     if (isRateLimitError(error)) {
       res.status(429).json({
         success: false,
         message: "站点限流，请稍后重试",
+        data: null
+      });
+      return;
+    }
+
+    next(error);
+  }
+});
+
+router.post("/accounts/import", async (req, res, next) => {
+  try {
+    const content = typeof req.body?.content === "string" ? req.body.content : "";
+    const format = req.body?.format === "json" || req.body?.format === "txt" ? req.body.format : "auto";
+    const accounts = parseAccountsContent(content, format);
+
+    if (!accounts.length) {
+      res.status(400).json({
+        success: false,
+        message: "未解析到有效账号，请检查 txt/json 内容格式",
+        data: null
+      });
+      return;
+    }
+
+    const result = saveAccounts(accounts);
+    clearDashboardCache();
+
+    ok(
+      res,
+      {
+        accountFile: result.accountFile,
+        count: result.count,
+        usernames: result.accounts.map((account) => account.username)
+      },
+      `已导入 ${result.count} 个账号`
+    );
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      res.status(400).json({
+        success: false,
+        message: "JSON 格式错误，请检查导入文件内容",
         data: null
       });
       return;

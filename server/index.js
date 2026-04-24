@@ -4,6 +4,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
 import quotaRoutes from "./api/quota.js";
+import { startAutoCheckinScheduler, stopAutoCheckinScheduler } from "./utils/caowo.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,6 +54,15 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
+  startAutoCheckinScheduler();
   console.log(`CW-Ops API is running at http://localhost:${port}`);
 });
+
+function shutdown() {
+  stopAutoCheckinScheduler();
+  server.close(() => process.exit(0));
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

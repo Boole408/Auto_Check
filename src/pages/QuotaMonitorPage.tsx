@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import {
   Bar,
@@ -16,7 +16,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock3,
-  Database,
+  FileUp,
   Gauge,
   LoaderCircle,
   Moon,
@@ -25,6 +25,7 @@ import {
   ShieldAlert,
   Sun,
   WalletCards,
+  X,
   Zap
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -38,12 +39,15 @@ import {
   SelectTrigger,
   SelectValue
 } from "@/components/ui/select";
-import { ApiError, checkinAccount, checkinAll, getQuotaMonitor } from "@/services/api";
+import { ApiError, checkinAccount, checkinAll, getQuotaMonitor, importAccounts } from "@/services/api";
 import type {
   AccountQuota,
+  AutoCheckinState,
+  DashboardAlert,
   CheckinQueueState,
   CheckinScope,
   QuotaDashboard,
+  AutoCheckinStatus,
   QueueLifecycleStatus,
   TodayUsedStatus,
   UsageSyncState
@@ -60,6 +64,35 @@ const FILTERS = [
 ] as const;
 
 type AccountFilter = (typeof FILTERS)[number]["key"];
+type AnalysisTab = "comparison" | "checkinTrend" | "usageTrend";
+
+const PRIMARY_FILTERS = FILTERS.filter((item) => item.key !== "checked");
+const EXTRA_FILTERS = FILTERS.filter((item) => item.key === "checked");
+const ANALYSIS_TABS: Array<{
+  key: AnalysisTab;
+  label: string;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "comparison",
+    label: "账号额度对比",
+    title: "账号额度对比",
+    description: "对比各账号今日已用与剩余额度，默认只展开一张图。"
+  },
+  {
+    key: "checkinTrend",
+    label: "签到趋势",
+    title: "签到趋势",
+    description: "观察最近周期的签到收益变化。"
+  },
+  {
+    key: "usageTrend",
+    label: "用量趋势",
+    title: "用量趋势",
+    description: "聚焦最近周期的实际用量变化。"
+  }
+];
 
 const listVariants = {
   hidden: { opacity: 0 },
@@ -73,6 +106,19 @@ const itemVariants = {
   hidden: { opacity: 0, y: 20 },
   show: { opacity: 1, y: 0, transition: { duration: 0.3 } }
 };
+
+const ACCOUNT_IMPORT_PLACEHOLDER = `支持 txt:
+username,password
+账号：your_username，密码：your_password
+
+支持 json:
+[
+  { "username": "user1", "password": "pass1" },
+  { "username": "user2", "password": "pass2" }
+]`;
+
+const ACCOUNT_TABLE_GRID =
+  "xl:grid-cols-[minmax(0,2.35fr)_0.9fr_0.88fr_0.92fr_0.96fr_0.96fr_0.82fr_84px_118px]";
 
 function money(value: number | null | undefined, symbol = "楼") {
   if (value == null) return "待同步";
@@ -94,6 +140,16 @@ function formatTime(value?: string | null) {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit"
+  }).format(new Date(value));
+}
+
+function formatCompactTime(value?: string | null) {
+  if (!value) return "未安排";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
   }).format(new Date(value));
 }
 
@@ -123,8 +179,8 @@ function usageTone(value: number) {
     };
   }
   return {
-    bar: "bg-emerald-500",
-    text: "text-emerald-600 dark:text-emerald-300",
+    bar: "bg-[linear-gradient(90deg,#34C79A,#7BE3C2)]",
+    text: "text-[#08785C]",
     badge: "success" as const
   };
 }
@@ -152,23 +208,153 @@ function getQueueLabel(status?: QueueLifecycleStatus) {
   }
 }
 
+function getAutoCheckinVariant(status?: AutoCheckinStatus) {
+  switch (status) {
+    case "running":
+      return "default" as const;
+    case "cooldown":
+    case "retrying":
+      return "warning" as const;
+    case "triggered":
+      return "success" as const;
+    case "disabled":
+      return "outline" as const;
+    default:
+      return "secondary" as const;
+  }
+}
+
+function getAutoCheckinLabel(status?: AutoCheckinStatus) {
+  switch (status) {
+    case "running":
+      return "执行中";
+    case "cooldown":
+      return "冷却中";
+    case "retrying":
+      return "重试中";
+    case "triggered":
+      return "已触发";
+    case "disabled":
+      return "已关闭";
+    default:
+      return "待执行";
+  }
+}
+
+function describeAutoCheckin(autoCheckin: AutoCheckinState | undefined) {
+  if (!autoCheckin) return "自动签到状态读取中";
+
+  switch (autoCheckin.status) {
+    case "disabled":
+      return "当前未启用每日自动签到。";
+    case "running":
+      return "今日自动任务已触发，签到队列正在执行。";
+    case "cooldown":
+      return "自动任务已触发，但当前处于限流冷却中。";
+    case "retrying":
+      return autoCheckin.lastErrorMessage || "上次自动触发失败，系统会按退避策略继续重试。";
+    case "triggered":
+      return "今天的自动签到已经触发完成。";
+    default:
+      return `每日会按 ${autoCheckin.time} 自动触发签到队列。`;
+  }
+}
+
+function normalizeUsageQueue(queue: UsageSyncState | undefined) {
+  if (!queue) return queue;
+  if (queue.status === "completed") return queue;
+  if (queue.progress.total > 0 && queue.progress.pending === 0 && !queue.currentUsername) {
+    return {
+      ...queue,
+      status: "completed" as const,
+      cooldownUntil: null,
+      message: "当日用量已同步"
+    };
+  }
+  return queue;
+}
+
 function getCheckinBadge(account: AccountQuota) {
-  if (account.signedToday) return <Badge variant="success">今日已签到</Badge>;
-  if (account.checkinStatus === "failed") return <Badge variant="destructive">签到异常</Badge>;
-  if (account.checkinStatus === "unknown") return <Badge variant="outline">状态待同步</Badge>;
-  return <Badge variant="warning">未签到</Badge>;
+  const className =
+    "rounded-full px-2.5 py-0.5 text-[11px] font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.82)]";
+  if (account.signedToday) {
+    return (
+      <Badge
+        variant="success"
+        className={cn(className, "border-[#BDEDDD] bg-[#E6FAF2] text-[#08785C]")}
+      >
+        今日已签到
+      </Badge>
+    );
+  }
+  if (account.checkinStatus === "failed") {
+    return (
+      <Badge
+        variant="destructive"
+        className={cn(className, "border-red-500/16 bg-[rgba(233,201,194,0.82)] text-red-800")}
+      >
+        签到异常
+      </Badge>
+    );
+  }
+  if (account.checkinStatus === "unknown") {
+    return (
+      <Badge
+        variant="outline"
+        className={cn(className, "border-[#DDEAE5] bg-[#F3F8F5] text-[#4D625B] dark:border-[#294038] dark:bg-[#16241f] dark:text-[#A3BBB3]")}
+      >
+        状态待同步
+      </Badge>
+    );
+  }
+  return (
+    <Badge
+      variant="warning"
+      className={cn(className, "border-amber-500/16 bg-[rgba(227,212,176,0.84)] text-amber-800")}
+    >
+      未签到
+    </Badge>
+  );
 }
 
 function getTodayUsedBadge(status: TodayUsedStatus) {
   switch (status) {
     case "exact":
-      return <Badge variant="success">精确</Badge>;
+      return (
+        <Badge
+          variant="success"
+          className="rounded-full border-[#BDEDDD] bg-[#E6FAF2] px-2.5 py-0.5 text-[11px] font-semibold text-[#08785C] shadow-[inset_0_1px_0_rgba(255,255,255,0.46)]"
+        >
+          精确
+        </Badge>
+      );
     case "stale":
-      return <Badge variant="outline">缓存</Badge>;
+      return (
+        <Badge
+          variant="outline"
+          className="rounded-full border-[#DDEAE5] bg-[#F3F8F5] px-2.5 py-0.5 text-[11px] font-semibold text-[#4D625B] shadow-[inset_0_1px_0_rgba(255,255,255,0.46)] dark:border-[#294038] dark:bg-[#16241f] dark:text-[#A3BBB3]"
+        >
+          缓存
+        </Badge>
+      );
     case "unavailable":
-      return <Badge variant="destructive">不可用</Badge>;
+      return (
+        <Badge
+          variant="destructive"
+          className="rounded-full border-red-500/16 bg-[rgba(233,201,194,0.82)] px-2.5 py-0.5 text-[11px] font-semibold text-red-800 shadow-[inset_0_1px_0_rgba(245,236,234,0.42)]"
+        >
+          不可用
+        </Badge>
+      );
     default:
-      return <Badge variant="warning">待同步</Badge>;
+      return (
+        <Badge
+          variant="warning"
+          className="rounded-full border-amber-500/16 bg-[rgba(227,212,176,0.84)] px-2.5 py-0.5 text-[11px] font-semibold text-amber-800 shadow-[inset_0_1px_0_rgba(245,239,226,0.4)]"
+        >
+          待同步
+        </Badge>
+      );
   }
 }
 
@@ -196,22 +382,45 @@ function getCheckinSourceText(account: AccountQuota) {
 }
 
 function getCheckinActionLabel(queue: CheckinQueueState | undefined, pending = false) {
-  if (!queue || queue.status === "idle" || queue.status === "completed") {
-    return pending ? "启动中..." : "开始签到";
-  }
-  if (queue.status === "cooldown") {
+  if (queue?.status === "cooldown") {
     return "冷却中";
   }
-  if (queue.status === "paused") {
-    return pending ? "恢复中..." : "继续签到";
+  if (pending || queue?.status === "running") {
+    return "一键签到中...";
   }
-  return pending ? "启动中..." : "继续签到";
+  return "一键签到";
 }
 
 function getSingleActionLabel(account: AccountQuota, working: boolean, coolingDown: boolean) {
   if (account.signedToday) return "今日已签到";
   if (coolingDown) return "冷却中";
-  return working ? "签到中..." : "立即签到";
+  return working ? "签到中..." : "去签到";
+}
+
+function getCheckinStatusText(account: AccountQuota) {
+  if (account.signedToday) return "今日已签到";
+  if (account.checkinStatus === "failed") return "签到异常";
+  if (account.checkinStatus === "unknown") return "待确认";
+  return "未签到";
+}
+
+function getTodayUsedStatusText(status: TodayUsedStatus) {
+  switch (status) {
+    case "exact":
+      return "精确";
+    case "stale":
+      return "缓存";
+    case "unavailable":
+      return "不可用";
+    default:
+      return "待同步";
+  }
+}
+
+function getAccountInitial(account: AccountQuota) {
+  const source = account.displayName || account.username;
+  const value = source.trim().charAt(0);
+  return value ? value.toUpperCase() : "A";
 }
 
 function matchesFilter(account: AccountQuota, filter: AccountFilter) {
@@ -281,6 +490,94 @@ function describeUsageQueue(queue: UsageSyncState | undefined, countdown: string
   }
 }
 
+function QueueStatCard({
+  label,
+  value,
+  hint,
+  tone = "default"
+}: {
+  label: string;
+  value: string | number;
+  hint?: string;
+  tone?: "default" | "primary" | "accent" | "danger";
+}) {
+  return (
+    <div className="rounded-[1.2rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.82)] px-4 py-3 shadow-[0_10px_24px_rgba(16,42,36,0.04),inset_0_1px_0_rgba(255,255,255,0.48)] dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)] dark:shadow-[0_12px_20px_rgba(0,0,0,0.2)]">
+      <p className="text-[11px] font-medium tracking-[0.14em] text-muted-foreground">{label}</p>
+      <p
+        className={cn(
+          "mt-2 text-[1.7rem] font-black leading-none tracking-tight",
+          tone === "primary" && "text-primary",
+          tone === "accent" && "text-accent",
+          tone === "danger" && "text-red-600 dark:text-red-300"
+        )}
+      >
+        {value}
+      </p>
+      {hint ? <p className="mt-2 text-xs text-muted-foreground">{hint}</p> : null}
+    </div>
+  );
+}
+
+function QueueMetaCell({
+  label,
+  value,
+  className,
+  valueClassName
+}: {
+  label: string;
+  value: ReactNode;
+  className?: string;
+  valueClassName?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-[1rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.82)] px-3.5 py-3 shadow-[0_10px_24px_rgba(16,42,36,0.04),inset_0_1px_0_rgba(255,255,255,0.5)] dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)] dark:shadow-[0_12px_20px_rgba(0,0,0,0.2)]",
+        className
+      )}
+    >
+      <p className="text-[11px] font-semibold tracking-[0.08em] text-muted-foreground">{label}</p>
+      <div className={cn("mt-1.5 text-sm font-semibold text-foreground/90", valueClassName)}>{value}</div>
+    </div>
+  );
+}
+
+function summarizeAlertAccounts(usernames: string[]) {
+  if (!usernames.length) return "全站接口";
+  const preview = usernames.slice(0, 3).join("、");
+  return usernames.length > 3 ? `${preview} 等 ${usernames.length} 个账号` : preview;
+}
+
+function getAlertPresentation(alert: DashboardAlert) {
+  switch (alert.type) {
+    case "auth_failed":
+      return {
+        Icon: ShieldAlert,
+        cardClassName:
+          "border-[#F4C5C5] bg-[linear-gradient(135deg,rgba(239,107,107,0.14),rgba(255,255,255,0.94))]",
+        iconClassName: "text-red-600 dark:text-red-300",
+        badgeVariant: "destructive" as const
+      };
+    case "sync_timeout":
+      return {
+        Icon: Clock3,
+        cardClassName:
+          "border-[#F7D9A6] bg-[linear-gradient(135deg,rgba(242,169,59,0.14),rgba(255,255,255,0.94))]",
+        iconClassName: "text-amber-600 dark:text-amber-300",
+        badgeVariant: "warning" as const
+      };
+    default:
+      return {
+        Icon: AlertTriangle,
+        cardClassName:
+          "border-[#F7D9A6] bg-[linear-gradient(135deg,rgba(242,169,59,0.12),rgba(255,255,255,0.94))]",
+        iconClassName: "text-amber-600 dark:text-amber-300",
+        badgeVariant: "warning" as const
+      };
+  }
+}
+
 export default function QuotaMonitorPage() {
   const [dashboard, setDashboard] = useState<QuotaDashboard | null>(null);
   const [selectedUsername, setSelectedUsername] = useState("");
@@ -292,7 +589,16 @@ export default function QuotaMonitorPage() {
   const [notice, setNotice] = useState("");
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("cw-theme") === "dark");
   const [now, setNow] = useState(Date.now());
+  const [accountImportDraft, setAccountImportDraft] = useState("");
+  const [accountImportFileName, setAccountImportFileName] = useState("");
+  const [importingAccounts, setImportingAccounts] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [analysisTab, setAnalysisTab] = useState<AnalysisTab>("comparison");
+  const [autoCheckinExpanded, setAutoCheckinExpanded] = useState(false);
+  const [detailExpanded, setDetailExpanded] = useState(false);
+  const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
   const selectedRef = useRef("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   async function loadDashboard(options: {
     silent?: boolean;
@@ -316,7 +622,6 @@ export default function QuotaMonitorPage() {
       });
 
       setDashboard(data);
-      setNotice(data.errors[0] ?? "");
       setSelectedUsername((current) => {
         if (current && data.accounts.some((account) => account.username === current)) {
           return current;
@@ -338,6 +643,16 @@ export default function QuotaMonitorPage() {
   useEffect(() => {
     selectedRef.current = selectedUsername;
   }, [selectedUsername]);
+
+  useEffect(() => {
+    setDetailExpanded(false);
+  }, [selectedUsername]);
+
+  useEffect(() => {
+    if (filter === "checked") {
+      setMoreFiltersOpen(true);
+    }
+  }, [filter]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -364,6 +679,24 @@ export default function QuotaMonitorPage() {
   }, [darkMode]);
 
   useEffect(() => {
+    document.body.classList.toggle("overflow-hidden", importModalOpen);
+    return () => document.body.classList.remove("overflow-hidden");
+  }, [importModalOpen]);
+
+  useEffect(() => {
+    if (!importModalOpen) return;
+
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setImportModalOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  }, [importModalOpen]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
@@ -384,10 +717,53 @@ export default function QuotaMonitorPage() {
   const currencySymbol =
     dashboard?.currencySymbol || selectedAccount?.currencySymbol || dashboard?.accounts[0]?.currencySymbol || "楼";
   const checkinQueue = dashboard?.sync.checkinQueue;
-  const usageQueue = dashboard?.sync.usageSync;
+  const usageQueue = useMemo(
+    () => normalizeUsageQueue(dashboard?.sync.usageSync),
+    [dashboard?.sync.usageSync]
+  );
+  const autoCheckin = dashboard?.sync.autoCheckin;
   const cooldownCountdown = formatCountdown(checkinQueue?.cooldownUntil, now);
   const usageCountdown = formatCountdown(usageQueue?.cooldownUntil, now);
   const failedAccountsCount = checkinQueue?.progress.failed ?? 0;
+  const bulkCheckinBusy = workingScope === "all" || checkinQueue?.status === "running";
+  const activeAlerts = dashboard?.alerts ?? [];
+  const usageBreakdown = useMemo(() => {
+    return (dashboard?.accounts ?? []).reduce(
+      (acc, account) => {
+        acc[account.todayUsedStatus] += 1;
+        return acc;
+      },
+      {
+        exact: 0,
+        stale: 0,
+        pending: 0,
+        unavailable: 0
+      }
+    );
+  }, [dashboard?.accounts]);
+  const checkinCompleted = checkinQueue?.progress.completed ?? 0;
+  const checkinSkipped = checkinQueue?.progress.skipped ?? 0;
+  const checkinFailed = checkinQueue?.progress.failed ?? 0;
+  const checkinTotal = checkinQueue?.progress.total ?? 0;
+  const checkinHandled = checkinCompleted + checkinSkipped;
+  const checkinPending =
+    checkinQueue?.progress.pending ??
+    Math.max(checkinTotal - checkinCompleted - checkinSkipped - checkinFailed, 0);
+  const checkinProgressValue = checkinTotal ? (checkinHandled / checkinTotal) * 100 : 0;
+  const usageCompleted = usageQueue?.progress.completed ?? 0;
+  const usageTotal = usageQueue?.progress.total ?? 0;
+  const usageFailed = usageQueue?.progress.failed ?? 0;
+  const usagePending =
+    usageQueue?.progress.pending ??
+    Math.max(
+      usageTotal - usageCompleted - (usageQueue?.progress.skipped ?? 0) - usageFailed,
+      0
+    );
+  const usageCoverageCompleted = dashboard?.summary.todayUsedCoverage.exactOrStaleAccounts ?? 0;
+  const usageCoverageTotal = dashboard?.summary.todayUsedCoverage.totalAccounts ?? 0;
+  const usageCoverageRate = usageCoverageTotal
+    ? (usageCoverageCompleted / usageCoverageTotal) * 100
+    : 0;
 
   async function handleSingleCheckin(account: AccountQuota) {
     if (account.signedToday) return;
@@ -414,12 +790,7 @@ export default function QuotaMonitorPage() {
     try {
       setWorkingScope(scope);
       const result = await checkinAll(scope);
-      const queue = result.sync.checkinQueue;
-      setNotice(
-        scope === "failed"
-          ? `失败账号重试队列已启动，当前进度 ${queue.progress.completed + queue.progress.skipped}/${queue.progress.total}`
-          : `签到队列已启动，当前进度 ${queue.progress.completed + queue.progress.skipped}/${queue.progress.total}`
-      );
+      setNotice(result.message);
       await loadDashboard({ silent: true, force: true, selected: selectedUsername || null });
     } catch (error) {
       const message =
@@ -427,10 +798,55 @@ export default function QuotaMonitorPage() {
           ? "站点限流，请稍后重试"
           : error instanceof Error
             ? error.message
-            : "批量签到失败";
+            : scope === "failed"
+              ? "失败账号重试失败"
+              : "一键签到失败";
       setNotice(message);
     } finally {
       setWorkingScope(null);
+    }
+  }
+
+  async function handleImportFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!/\.(txt|json)$/i.test(file.name)) {
+      setNotice("仅支持导入 txt 或 json 文件");
+      event.target.value = "";
+      return;
+    }
+
+    const content = await file.text();
+    setAccountImportDraft(content);
+    setAccountImportFileName(file.name);
+    setNotice(`已载入 ${file.name}，确认后点击保存账号`);
+    event.target.value = "";
+  }
+
+  async function handleImportAccounts() {
+    if (!accountImportDraft.trim()) {
+      setNotice("请先粘贴账号内容或选择 txt/json 文件");
+      return;
+    }
+
+    try {
+      setImportingAccounts(true);
+      const result = await importAccounts({
+        content: accountImportDraft,
+        format: "auto"
+      });
+      setNotice(`已导入 ${result.count} 个账号`);
+      setAccountImportDraft("");
+      setAccountImportFileName("");
+      setImportModalOpen(false);
+      await loadDashboard({ silent: true, force: true, selected: selectedUsername || null });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "账号导入失败，请检查内容格式";
+      setNotice(message);
+    } finally {
+      setImportingAccounts(false);
     }
   }
 
@@ -461,6 +877,46 @@ export default function QuotaMonitorPage() {
     }
   ];
 
+  const accountCount = dashboard?.summary.accountCount ?? dashboard?.accounts.length ?? 0;
+  const checkinDisplayTotal = checkinTotal || accountCount;
+  const usageDisplayTotal = usageCoverageTotal || accountCount;
+  const issueAccountsCount = (dashboard?.accounts ?? []).filter(
+    (account) => account.checkinStatus === "failed" || account.todayUsedStatus === "unavailable"
+  ).length;
+  const overallTaskTotal = checkinDisplayTotal + usageDisplayTotal;
+  const overallTaskCompleted = checkinHandled + usageCoverageCompleted;
+  const overallProgress = overallTaskTotal ? (overallTaskCompleted / overallTaskTotal) * 100 : 0;
+  const primaryOverviewCards = [
+    {
+      label: "签到完成",
+      value: `${checkinHandled} / ${checkinDisplayTotal}`,
+      hint: checkinFailed ? `${checkinFailed} 个异常待处理` : "账号已完成签到",
+      icon: CheckCircle2
+    },
+    {
+      label: "用量同步",
+      value: `${usageCoverageCompleted} / ${usageDisplayTotal}`,
+      hint: usagePending ? `${usagePending} 个账号待同步` : "同步覆盖已完成",
+      icon: RefreshCw
+    },
+    {
+      label: "异常账号",
+      value: issueAccountsCount,
+      hint: issueAccountsCount ? "优先处理登录或同步异常" : "当前没有明显异常",
+      icon: ShieldAlert
+    }
+  ];
+  const selectedUsageTone = usageTone(selectedAccount?.usagePercent ?? 0);
+  const condensedAlerts = [
+    ...(notice ? [{ key: "notice", label: "系统提示", value: notice, variant: "outline" as const }] : []),
+    ...activeAlerts.slice(0, 3).map((alert) => ({
+      key: alert.type,
+      label: alert.title,
+      value: alert.message,
+      variant: getAlertPresentation(alert).badgeVariant
+    }))
+  ];
+
   const comparisonData =
     dashboard?.accounts.map((account) => ({
       name: account.displayName || account.username,
@@ -468,470 +924,727 @@ export default function QuotaMonitorPage() {
       remainingQuota: account.remainingQuota,
       balance: account.balance
     })) ?? [];
+  const trendData = dashboard?.trend ?? [];
+
+  const selectedAccountMetrics = selectedAccount
+    ? [
+        {
+          label: "今日已用",
+          value: getTodayUsedText(selectedAccount),
+          hint: getUsageSourceText(selectedAccount)
+        },
+        {
+          label: "剩余额度",
+          value: money(selectedAccount.remainingQuota, selectedAccount.currencySymbol),
+          hint: `总额度 ${money(selectedAccount.totalQuota, selectedAccount.currencySymbol)}`
+        },
+        {
+          label: "最近签到收益",
+          value: money(selectedAccount.lastCheckinReward, selectedAccount.currencySymbol),
+          hint: selectedAccount.checkinMessage
+        }
+      ]
+    : [];
+  const selectedAccountCoreFields = selectedAccount
+    ? [
+        {
+          label: "签到状态",
+          value: getCheckinStatusText(selectedAccount),
+          hint: selectedAccount.checkinMessage,
+          icon: CheckCircle2
+        },
+        {
+          label: "用量同步",
+          value: getUsageSourceText(selectedAccount),
+          hint: `同步于 ${formatTime(selectedAccount.todayUsedUpdatedAt)}`,
+          icon: Activity
+        },
+        {
+          label: "刷新时间",
+          value: formatTime(selectedAccount.updatedAt),
+          hint: "账号摘要最近更新时间",
+          icon: Clock3
+        },
+        {
+          label: "排队状态",
+          value: getAccountQueueHint(selectedAccount, checkinQueue, usageQueue),
+          hint: "用于定位当前是否仍在后台处理",
+          icon: RefreshCw
+        }
+      ]
+    : [];
+  const selectedAccountExtraFields = selectedAccount
+    ? [
+        {
+          label: "签到来源",
+          value: getCheckinSourceText(selectedAccount),
+          hint: "本地缓存与远程确认来源"
+        },
+        {
+          label: "总额度",
+          value: money(selectedAccount.totalQuota, selectedAccount.currencySymbol),
+          hint: `账号余额 ${money(selectedAccount.balance, selectedAccount.currencySymbol)}`
+        },
+        {
+          label: "使用率",
+          value: percent(selectedAccount.usagePercent),
+          hint: "按总额度换算"
+        },
+        {
+          label: "用量状态",
+          value: getTodayUsedStatusText(selectedAccount.todayUsedStatus),
+          hint: getUsageSourceText(selectedAccount)
+        }
+      ]
+    : [];
+  const analysisMeta = ANALYSIS_TABS.find((item) => item.key === analysisTab) ?? ANALYSIS_TABS[0];
+  const chartGridStroke = darkMode ? "#1F322C" : "#E8F0EC";
+  const chartTooltipStyle = darkMode
+    ? {
+        borderRadius: "14px",
+        border: "1px solid #294038",
+        background: "rgba(19,32,27,0.96)"
+      }
+    : {
+        borderRadius: "14px",
+        border: "1px solid #DDEAE5",
+        background: "rgba(255,255,255,0.92)"
+      };
+  const chartUsedColor = "#34C79A";
+  const chartRemainingColor = darkMode ? "#31433D" : "#D7E5DF";
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-background text-foreground">
+    <main className="quota-monitor-page relative min-h-screen overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_20%_0%,rgba(52,199,154,0.08),transparent_26%),linear-gradient(180deg,#F8FCFA_0%,#F3F8F5_100%)] text-foreground dark:bg-[radial-gradient(circle_at_20%_0%,rgba(52,199,154,0.12),transparent_24%),linear-gradient(180deg,#0D1714_0%,#111D19_100%)]">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute left-[-8rem] top-[-8rem] h-80 w-80 rounded-full bg-accent/20 blur-3xl" />
-        <div className="absolute right-[-12rem] top-16 h-96 w-96 rounded-full bg-primary/16 blur-3xl" />
-        <div className="absolute bottom-[-10rem] left-1/3 h-96 w-96 rounded-full bg-secondary/60 blur-3xl" />
+        <div className="absolute left-[-7rem] top-[-7rem] h-64 w-64 rounded-full bg-[#DDF8EE]/14 blur-[100px] dark:bg-[#1D4436]/28" />
+        <div className="absolute right-[-8rem] top-0 h-72 w-72 rounded-full bg-[#ECFBF6]/18 blur-[110px] dark:bg-[#173228]/28" />
+        <div className="absolute bottom-[-8rem] left-1/4 h-64 w-64 rounded-full bg-[#DDF8EE]/10 blur-[120px] dark:bg-[#133027]/24" />
       </div>
 
-      <div className="relative mx-auto flex w-full max-w-[1700px] flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8">
+      <div className="relative mx-auto flex min-h-screen w-full max-w-[1680px] flex-col gap-3 px-4 py-4 sm:px-6">
         <motion.header
-          initial={{ opacity: 0, y: -18 }}
+          initial={{ opacity: 0, y: -16 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex flex-col gap-4 rounded-[1.6rem] border border-border/70 bg-card/78 p-4 shadow-[0_20px_80px_hsl(var(--foreground)/0.08)] backdrop-blur-xl lg:flex-row lg:items-center lg:justify-between"
+          className="flex shrink-0 flex-col gap-3 rounded-[1.55rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.9)] px-4 py-3 shadow-[0_12px_32px_rgba(16,42,36,0.06)] backdrop-blur-md dark:border-[#233A33] dark:bg-[rgba(18,28,24,0.88)] dark:shadow-[0_16px_32px_rgba(0,0,0,0.32)] lg:flex-row lg:items-center lg:justify-between"
         >
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-3">
-              <span className="grid h-11 w-11 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-lg">
-                <Zap className="h-5 w-5" />
+              <span className="grid h-11 w-11 place-items-center rounded-[1.05rem] bg-[linear-gradient(135deg,#34C79A,#7BE3C2)] text-white shadow-[0_10px_24px_rgba(52,199,154,0.28)]">
+                <Zap className="h-[18px] w-[18px]" />
               </span>
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.36em] text-muted-foreground">
-                  CW-OPS ACCOUNT OPERATIONS
-                </p>
-                <h1 className="text-2xl font-black tracking-tight sm:text-3xl">
+              <div className="min-w-0">
+                <h1 className="truncate text-[1.34rem] font-black tracking-tight text-[#102A24] dark:text-[#E7F7F0] sm:text-[1.6rem]">
                   CW-Ops 账户管理系统
                 </h1>
+                <p className="mt-0.5 text-[12px] text-[#71867F] dark:text-[#8DA69E]">
+                  聚焦监测、用量同步和多账号数据统筹，保障额度与生产能力可视可控。
+                </p>
               </div>
             </div>
-            <p className="mt-3 text-sm text-muted-foreground">
-              将签到快路径、限流冷却和当日精确用量同步放进同一块运维看板里。
-            </p>
           </div>
 
-          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center lg:justify-end">
-            <div className="min-w-[220px]">
-              <Select value={selectedAccount?.username ?? ""} onValueChange={setSelectedUsername}>
-                <SelectTrigger>
-                  <SelectValue placeholder="选择账号" />
+          <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+            <div className="min-w-[144px]">
+              <Select value="caowo" onValueChange={() => undefined}>
+                <SelectTrigger className="h-9 rounded-full border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] px-4 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]">
+                  <SelectValue placeholder="Provider" />
                 </SelectTrigger>
                 <SelectContent>
-                  {dashboard?.accounts.map((account) => (
-                    <SelectItem value={account.username} key={account.username}>
-                      {account.displayName || account.username}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="caowo">CAOWO</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
-            <motion.div whileTap={{ scale: 0.96 }}>
-              <Button variant="outline" onClick={() => setDarkMode((value) => !value)}>
-                {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                主题切换
-              </Button>
-            </motion.div>
+            <Button
+              variant="outline"
+              className="h-9 border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] px-4 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]"
+              onClick={() => setImportModalOpen(true)}
+            >
+              <FileUp className="h-4 w-4" />
+              账号导入
+            </Button>
 
-            <motion.div whileTap={{ scale: 0.96 }}>
-              <Button
-                variant="outline"
-                onClick={() =>
-                  void loadDashboard({
-                    silent: true,
-                    force: true,
-                    selected: selectedUsername || null
-                  })
-                }
-                disabled={refreshing}
-              >
-                <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
-                刷新
-              </Button>
-            </motion.div>
+            <Button
+              variant={darkMode ? "secondary" : "outline"}
+              className={cn(
+                "h-9 px-4 text-xs",
+                darkMode
+                  ? "border-[#294038] bg-[rgba(19,31,27,0.92)] text-[#E7F7F0] shadow-[0_8px_18px_rgba(0,0,0,0.26)]"
+                  : "border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] text-[#2F4A43] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]"
+              )}
+              onClick={() => setDarkMode((value) => !value)}
+            >
+              {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              主题
+            </Button>
 
-            <motion.div whileTap={{ scale: 0.96 }}>
-              <Button
-                onClick={() => void handleCheckinAll("all")}
-                disabled={
-                  !dashboard?.accounts.length ||
-                  workingScope !== null ||
-                  checkinQueue?.status === "cooldown"
-                }
-              >
-                {workingScope === "all" ? (
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                ) : (
-                  <CheckCircle2 className="h-4 w-4" />
-                )}
-                {getCheckinActionLabel(checkinQueue, workingScope === "all")}
-              </Button>
-            </motion.div>
+            <Button
+              variant="outline"
+              className="h-9 border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] px-4 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]"
+              onClick={() =>
+                void loadDashboard({
+                  silent: true,
+                  force: true,
+                  selected: selectedUsername || null
+                })
+              }
+              disabled={refreshing}
+            >
+              <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
+              刷新
+            </Button>
+
+            <Button
+              className="h-9 bg-[linear-gradient(135deg,#34C79A,#22B889)] px-4 text-xs text-white shadow-[0_8px_20px_rgba(52,199,154,0.28)]"
+              onClick={() => void handleCheckinAll("all")}
+              disabled={
+                !dashboard?.accounts.length ||
+                workingScope !== null ||
+                checkinQueue?.status === "cooldown" ||
+                checkinQueue?.status === "running"
+              }
+            >
+              {bulkCheckinBusy ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <CheckCircle2 className="h-4 w-4" />
+              )}
+              {getCheckinActionLabel(checkinQueue, bulkCheckinBusy)}
+            </Button>
           </div>
         </motion.header>
 
-        <section className="grid gap-4 lg:grid-cols-2">
-          <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-            <Card className="h-full">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <CardTitle>签到队列进度</CardTitle>
-                    <CardDescription>
-                      当前账号：{checkinQueue?.currentUsername || "暂无"}
-                    </CardDescription>
-                  </div>
-                  <Badge variant={getQueueVariant(checkinQueue?.status)}>
-                    {getQueueLabel(checkinQueue?.status)}
-                  </Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">
-                    完成 {checkinQueue?.progress.completed ?? 0}，跳过{" "}
-                    {checkinQueue?.progress.skipped ?? 0}，失败 {checkinQueue?.progress.failed ?? 0}
-                  </span>
-                  <span className="font-semibold">
-                    {(checkinQueue?.progress.completed ?? 0) +
-                      (checkinQueue?.progress.skipped ?? 0)}
-                    /{checkinQueue?.progress.total ?? 0}
-                  </span>
-                </div>
-                <Progress
-                  value={
-                    !checkinQueue?.progress.total
-                      ? 0
-                      : (((checkinQueue.progress.completed + checkinQueue.progress.skipped) /
-                          checkinQueue.progress.total) *
-                          100)
-                  }
-                  indicatorClassName="bg-primary"
-                />
-                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                  <span>{describeCheckinQueue(checkinQueue, cooldownCountdown)}</span>
-                  {cooldownCountdown && checkinQueue?.status === "cooldown" ? (
-                    <Badge variant="warning">冷却倒计时 {cooldownCountdown}</Badge>
-                  ) : null}
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
-
-          <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-            <Card className="h-full">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <CardTitle>当日用量同步</CardTitle>
-                    <CardDescription>
-                      当前账号：{usageQueue?.currentUsername || "暂无"}
-                    </CardDescription>
-                  </div>
-                  <Badge variant={getQueueVariant(usageQueue?.status)}>
-                    {getQueueLabel(usageQueue?.status)}
-                  </Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">
-                    已同步 {dashboard?.summary.todayUsedCoverage.exactOrStaleAccounts ?? 0}/
-                    {dashboard?.summary.todayUsedCoverage.totalAccounts ?? 0}
-                  </span>
-                  <span className="font-semibold">
-                    {usageQueue?.progress.completed ?? 0}/{usageQueue?.progress.total ?? 0}
-                  </span>
-                </div>
-                <Progress
-                  value={
-                    !usageQueue?.progress.total
-                      ? 0
-                      : (usageQueue.progress.completed / usageQueue.progress.total) * 100
-                  }
-                  indicatorClassName="bg-accent"
-                />
-                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                  <span>{describeUsageQueue(usageQueue, usageCountdown)}</span>
-                  {usageCountdown && usageQueue?.status === "cooldown" ? (
-                    <Badge variant="warning">冷却倒计时 {usageCountdown}</Badge>
-                  ) : null}
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
-        </section>
-
-        {notice ? (
+        {condensedAlerts.length ? (
           <motion.div
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex items-start gap-3 rounded-2xl border border-border bg-card/75 px-4 py-3 text-sm text-muted-foreground backdrop-blur-xl"
+            className="flex shrink-0 flex-wrap items-center gap-2 rounded-[1.2rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.86)] px-3 py-2 shadow-[0_10px_22px_rgba(16,42,36,0.05)] dark:border-[#233A33] dark:bg-[rgba(19,31,27,0.88)] dark:shadow-[0_14px_28px_rgba(0,0,0,0.28)]"
           >
-            <ShieldAlert className="mt-0.5 h-4 w-4 text-accent" />
-            <span>{notice}</span>
+            {condensedAlerts.map((item) => (
+              <Badge key={item.key} variant={item.variant} className="max-w-full truncate px-3 py-1 text-[11px]">
+                {item.label}：{item.value}
+              </Badge>
+            ))}
           </motion.div>
         ) : null}
 
-        <motion.section
-          variants={listVariants}
-          initial="hidden"
-          animate="show"
-          className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
-        >
-          {summaryCards.map((card) => {
-            const Icon = card.icon;
-            return (
-              <motion.div variants={itemVariants} whileHover={{ y: -4 }} key={card.title}>
-                <Card className="h-full">
-                  <CardContent className="p-5">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm text-muted-foreground">{card.title}</p>
-                        <p className="mt-3 text-2xl font-black tracking-tight">{card.value}</p>
-                      </div>
-                      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-secondary text-primary">
-                        <Icon className="h-5 w-5" />
-                      </span>
+        <div className="grid gap-2.5 xl:grid-cols-12 xl:items-stretch">
+          <section className="flex h-full flex-col gap-2.5 xl:col-span-8">
+            <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="shrink-0">
+              <Card className="overflow-hidden border-[#DDEAE5] bg-[rgba(255,255,255,0.86)] shadow-[0_12px_32px_rgba(16,42,36,0.06)] dark:border-[#233A33] dark:bg-[rgba(18,28,24,0.88)] dark:shadow-[0_16px_32px_rgba(0,0,0,0.3)]">
+                <CardHeader className="pb-2.5">
+                  <div className="flex items-end justify-between gap-3">
+                    <div>
+                      <CardTitle className="text-[1.08rem] text-[#102A24] dark:text-[#E7F7F0]">今日总览</CardTitle>
+                      <CardDescription className="mt-1 text-[12px] text-[#71867F] dark:text-[#8DA69E]">
+                        刷新时间 {formatCompactTime(dashboard?.refreshedAt)}，优先显示今天需要处理的任务与告警信息。
+                      </CardDescription>
                     </div>
-                    <p className="mt-5 text-xs text-muted-foreground">{card.hint}</p>
-                  </CardContent>
-                </Card>
-              </motion.div>
-            );
-          })}
-        </motion.section>
-
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_560px] 2xl:grid-cols-[minmax(0,1fr)_640px]">
-          <section className="flex min-w-0 flex-col gap-6">
-            <Card>
-              <CardHeader className="pb-4">
-                <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                  <div>
-                    <CardTitle>多账号列表</CardTitle>
-                    <CardDescription>
-                      按签到状态、同步状态和异常情况筛选账号。
-                    </CardDescription>
+                    <p className="hidden text-[11px] text-[#9AABA5] dark:text-[#657A73] xl:block">
+                      列表与详情已压缩到单屏运营视图
+                    </p>
                   </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    {FILTERS.map((item) => (
-                      <Button
-                        key={item.key}
-                        size="sm"
-                        variant={filter === item.key ? "default" : "outline"}
-                        onClick={() => setFilter(item.key)}
-                      >
-                        {item.label}
-                      </Button>
-                    ))}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void handleCheckinAll("failed")}
-                      disabled={
-                        failedAccountsCount === 0 ||
-                        workingScope !== null ||
-                        checkinQueue?.status === "cooldown"
-                      }
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                      仅重试失败账号
-                    </Button>
-                  </div>
-                </div>
-              </CardHeader>
-
-              <CardContent>
-                {loading ? (
-                  <div className="grid gap-3">
-                    {Array.from({ length: 4 }).map((_, index) => (
-                      <div
-                        className="h-28 animate-pulse rounded-2xl bg-muted/70"
-                        key={`loading-${index}`}
-                      />
-                    ))}
-                  </div>
-                ) : filteredAccounts.length ? (
-                  <motion.div variants={listVariants} initial="hidden" animate="show" className="grid gap-3">
-                    {filteredAccounts.map((account) => {
-                      const tone = usageTone(account.usagePercent);
-                      const isSelected = selectedAccount?.username === account.username;
-                      const coolingDown = checkinQueue?.status === "cooldown";
-                      const isWorking = workingAccount === account.username;
-
+                </CardHeader>
+                <CardContent className="space-y-2.5">
+                  <div className="grid gap-2.5 md:grid-cols-3">
+                    {primaryOverviewCards.map((metric) => {
+                      const Icon = metric.icon;
                       return (
-                        <motion.article
-                          variants={itemVariants}
-                          whileHover={{ scale: 1.006 }}
-                          key={account.username}
-                          className={cn(
-                            "rounded-2xl border bg-background/55 p-4 transition",
-                            isSelected
-                              ? "border-primary/60 shadow-[0_16px_55px_hsl(var(--primary)/0.15)]"
-                              : "border-border/80"
-                          )}
+                        <div
+                          key={metric.label}
+                          className="rounded-[1.12rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.86)] px-3.5 py-2.5 shadow-[0_10px_22px_rgba(16,42,36,0.05)] dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)] dark:shadow-[0_12px_22px_rgba(0,0,0,0.22)]"
                         >
-                          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                            <button
-                              type="button"
-                              className="min-w-0 text-left"
-                              onClick={() => setSelectedUsername(account.username)}
-                            >
-                              <div className="flex flex-wrap items-center gap-2">
-                                <h3 className="truncate text-base font-bold">
-                                  {account.displayName || account.username}
-                                </h3>
-                                {getCheckinBadge(account)}
-                                {getTodayUsedBadge(account.todayUsedStatus)}
-                              </div>
-                              <p className="mt-1 text-xs text-muted-foreground">
-                                {getAccountQueueHint(account, checkinQueue, usageQueue)}
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-[11px] font-semibold tracking-[0.12em] text-[#71867F] dark:text-[#89A39B]">
+                                {metric.label}
                               </p>
-                            </button>
-
-                            <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4 xl:min-w-[520px]">
-                              <div>
-                                <p className="text-xs text-muted-foreground">今日已用</p>
-                                <p className="mt-1 font-semibold">{getTodayUsedText(account)}</p>
-                              </div>
-                              <div>
-                                <p className="text-xs text-muted-foreground">总额度</p>
-                                <p className="mt-1 font-semibold">
-                                  {money(account.totalQuota, account.currencySymbol)}
-                                </p>
-                              </div>
-                              <div>
-                                <p className="text-xs text-muted-foreground">剩余额度</p>
-                                <p className="mt-1 font-semibold">
-                                  {money(account.remainingQuota, account.currencySymbol)}
-                                </p>
-                              </div>
-                              <div>
-                                <p className="text-xs text-muted-foreground">当前余额</p>
-                                <p className="mt-1 font-semibold">
-                                  {money(account.balance, account.currencySymbol)}
-                                </p>
-                              </div>
+                              <p className="mt-1 text-[1.42rem] font-black leading-none tracking-tight text-[#102A24] dark:text-[#F0FBF6]">
+                                {metric.value}
+                              </p>
+                              <p className="mt-1 text-[10px] text-[#9AABA5] dark:text-[#667B73]">{metric.hint}</p>
                             </div>
-
-                            <motion.div whileTap={{ scale: 0.96 }}>
-                              <Button
-                                size="sm"
-                                variant={account.signedToday ? "secondary" : "default"}
-                                disabled={account.signedToday || coolingDown || isWorking}
-                                onClick={() => void handleSingleCheckin(account)}
-                              >
-                                {isWorking ? (
-                                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                                ) : (
-                                  <CheckCircle2 className="h-4 w-4" />
-                                )}
-                                {getSingleActionLabel(account, isWorking, Boolean(coolingDown))}
-                              </Button>
-                            </motion.div>
+                            <span className="grid h-9 w-9 place-items-center rounded-full border border-[#BDEDDD] bg-[#ECFBF6] text-[#34C79A] shadow-[inset_0_1px_0_rgba(255,255,255,0.76)]">
+                              <Icon className="h-[18px] w-[18px]" />
+                            </span>
                           </div>
-
-                          <div className="mt-4 grid gap-2">
-                            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                              <span className={cn("font-semibold", tone.text)}>
-                                使用率 {percent(account.usagePercent)}
-                              </span>
-                              <span className="text-muted-foreground">
-                                {account.todayUsed == null
-                                  ? "待同步 / 未覆盖"
-                                  : `${money(account.todayUsed, account.currencySymbol)} / ${money(account.totalQuota, account.currencySymbol)}`}
-                              </span>
-                            </div>
-                            <Progress value={account.usagePercent} indicatorClassName={tone.bar} />
-                          </div>
-                        </motion.article>
+                        </div>
                       );
                     })}
-                  </motion.div>
-                ) : (
-                  <div className="rounded-2xl border border-dashed bg-background/45 p-8 text-center text-sm text-muted-foreground">
-                    当前筛选条件下没有账号数据。
                   </div>
-                )}
-              </CardContent>
-            </Card>
-          </section>
 
-          <aside className="flex flex-col gap-6 xl:sticky xl:top-5 xl:self-start">
-            <Card className="overflow-hidden">
-              <CardHeader>
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <CardTitle>账号详情</CardTitle>
-                    <CardDescription>查看选中账号的签到来源、用量同步和队列状态。</CardDescription>
-                  </div>
-                  <Clock3 className="h-5 w-5 text-muted-foreground" />
-                </div>
-              </CardHeader>
-              <CardContent>
-                {selectedAccount ? (
-                  <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-                    <div className="rounded-3xl bg-primary p-5 text-primary-foreground">
-                      <p className="text-sm opacity-80">当前账号</p>
-                      <h2 className="mt-2 break-all text-2xl font-black">
-                        {selectedAccount.displayName || selectedAccount.username}
-                      </h2>
-                      <div className="mt-4 flex flex-wrap items-center gap-2">
-                        {getCheckinBadge(selectedAccount)}
-                        {getTodayUsedBadge(selectedAccount.todayUsedStatus)}
-                        <Badge variant={usageTone(selectedAccount.usagePercent).badge}>
-                          {percent(selectedAccount.usagePercent)}
-                        </Badge>
+                  <div className="rounded-[1.18rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.84)] px-3.5 py-2.5 shadow-[0_10px_22px_rgba(16,42,36,0.04),inset_0_1px_0_rgba(255,255,255,0.76)] dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)] dark:shadow-[0_12px_24px_rgba(0,0,0,0.22)]">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-[12px] font-semibold text-[#2F4A43] dark:text-[#D5ECE4]">今日任务完成度</p>
+                        <p className="mt-1 text-[11px] text-[#71867F] dark:text-[#89A39B]">
+                          签到状态：成功 {checkinCompleted}，跳过 {checkinSkipped}，失败 {checkinFailed}，
+                          用量同步：{usageCoverageCompleted}/{usageDisplayTotal}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[1.2rem] font-black leading-none tracking-tight text-[#102A24] dark:text-[#F0FBF6]">
+                          {overallTaskTotal ? percent(overallProgress) : "0.0%"}
+                        </p>
+                        <p className="mt-1 text-[11px] text-[#71867F] dark:text-[#89A39B]">
+                          {overallTaskCompleted}/{overallTaskTotal || 0}
+                        </p>
                       </div>
                     </div>
-
-                    <div className="mt-5 space-y-4">
-                      <div>
-                        <div className="mb-2 flex items-center justify-between text-sm">
-                          <span>额度使用率</span>
-                          <strong>{percent(selectedAccount.usagePercent)}</strong>
-                        </div>
-                        <Progress
-                          value={selectedAccount.usagePercent}
-                          indicatorClassName={usageTone(selectedAccount.usagePercent).bar}
+                    <Progress
+                      className="mt-2.5 h-2 bg-[#E7F0EC]"
+                      value={overallProgress}
+                      indicatorClassName="bg-[linear-gradient(90deg,#34C79A,#7BE3C2)]"
+                    />
+                    <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[#71867F] dark:text-[#89A39B]">
+                      <span>自动签到：{getAutoCheckinLabel(autoCheckin?.status)}</span>
+                      <span>下次执行：{formatCompactTime(autoCheckin?.nextRunAt)}</span>
+                      <span>补跑策略：{autoCheckin?.catchUpEnabled ? "当天补签" : "严格整点"}</span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2.5 text-[11px]"
+                        onClick={() => setAutoCheckinExpanded((value) => !value)}
+                      >
+                        {autoCheckinExpanded ? "收起明细" : "查看调度详情"}
+                      </Button>
+                    </div>
+                    {autoCheckinExpanded ? (
+                      <div className="mt-2.5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                        <QueueMetaCell
+                          label="计划时间"
+                          value={`${autoCheckin?.time || "00:01"} (${autoCheckin?.timezone || "Asia/Shanghai"})`}
+                        />
+                        <QueueMetaCell label="最近触发" value={formatTime(autoCheckin?.lastTriggeredAt)} />
+                        <QueueMetaCell label="最近尝试" value={formatTime(autoCheckin?.lastAttemptAt)} />
+                        <QueueMetaCell
+                          label="调度状态"
+                          value={autoCheckin?.enabled ? describeAutoCheckin(autoCheckin) : "当前未启用"}
                         />
                       </div>
+                    ) : null}
+                  </div>
 
-                      <dl className="grid gap-3 text-sm">
-                        <div className="flex items-center justify-between rounded-2xl bg-background/55 px-4 py-3">
-                          <dt className="text-muted-foreground">最近签到收益</dt>
-                          <dd className="font-bold">
-                            {money(selectedAccount.lastCheckinReward, selectedAccount.currencySymbol)}
-                          </dd>
-                        </div>
-                        <div className="flex items-center justify-between rounded-2xl bg-background/55 px-4 py-3">
-                          <dt className="text-muted-foreground">签到状态来源</dt>
-                          <dd className="font-bold">{getCheckinSourceText(selectedAccount)}</dd>
-                        </div>
-                        <div className="flex items-center justify-between rounded-2xl bg-background/55 px-4 py-3">
-                          <dt className="text-muted-foreground">当日用量来源</dt>
-                          <dd className="font-bold">{getUsageSourceText(selectedAccount)}</dd>
-                        </div>
-                        <div className="flex items-center justify-between rounded-2xl bg-background/55 px-4 py-3">
-                          <dt className="text-muted-foreground">当日用量更新时间</dt>
-                          <dd className="font-bold">{formatTime(selectedAccount.todayUsedUpdatedAt)}</dd>
-                        </div>
-                        <div className="flex items-center justify-between rounded-2xl bg-background/55 px-4 py-3">
-                          <dt className="text-muted-foreground">刷新时间</dt>
-                          <dd className="font-bold">{formatTime(selectedAccount.updatedAt)}</dd>
-                        </div>
-                        <div className="flex items-center justify-between rounded-2xl bg-background/55 px-4 py-3">
-                          <dt className="text-muted-foreground">排队状态</dt>
-                          <dd className="font-bold">
-                            {getAccountQueueHint(selectedAccount, checkinQueue, usageQueue)}
-                          </dd>
-                        </div>
-                        {cooldownCountdown && checkinQueue?.status === "cooldown" ? (
-                          <div className="flex items-center justify-between rounded-2xl bg-background/55 px-4 py-3">
-                            <dt className="text-muted-foreground">冷却倒计时</dt>
-                            <dd className="font-bold text-amber-600 dark:text-amber-300">
-                              {cooldownCountdown}
-                            </dd>
+                  <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+                    {summaryCards.map((card) => {
+                      const Icon = card.icon;
+                      return (
+                        <div
+                          key={card.title}
+                          className="rounded-[1.08rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.86)] px-3.5 py-2.5 shadow-[0_10px_18px_rgba(16,42,36,0.05)] dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)] dark:shadow-[0_12px_20px_rgba(0,0,0,0.22)]"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-[11px] text-[#71867F] dark:text-[#89A39B]">{card.title}</p>
+                              <p className="mt-1 text-[1.18rem] font-black tracking-tight text-[#102A24] dark:text-[#F0FBF6]">
+                                {card.value}
+                              </p>
+                              <p className="mt-1 text-[10px] text-[#9AABA5] dark:text-[#667B73]">{card.hint}</p>
+                            </div>
+                            <span className="grid h-8.5 w-8.5 place-items-center rounded-full border border-[#BDEDDD] bg-[#ECFBF6] text-[#34C79A]">
+                              <Icon className="h-4 w-4" />
+                            </span>
                           </div>
-                        ) : null}
-                      </dl>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.section>
 
-                      <motion.div whileTap={{ scale: 0.96 }}>
+            <motion.section
+              variants={listVariants}
+              initial="hidden"
+              animate="show"
+              className="flex-1"
+            >
+              <Card className="flex h-full flex-col border-[#DDEAE5] bg-[rgba(255,255,255,0.86)] shadow-[0_12px_32px_rgba(16,42,36,0.06)] dark:border-[#233A33] dark:bg-[rgba(18,28,24,0.88)] dark:shadow-[0_16px_32px_rgba(0,0,0,0.3)]">
+                <CardHeader className="pb-2.5">
+                  <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+                    <div>
+                      <CardTitle className="text-[1.08rem] text-[#102A24] dark:text-[#E7F7F0]">多账号列表</CardTitle>
+                      <CardDescription className="mt-1 text-[12px] text-[#71867F] dark:text-[#8DA69E]">
+                        智能监测 | 同步和分析状态筛选账号。
+                      </CardDescription>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 rounded-full border border-[#DDEAE5] bg-[rgba(255,255,255,0.62)] p-1 dark:border-[#294038] dark:bg-[rgba(20,31,27,0.82)]">
+                      {PRIMARY_FILTERS.map((item) => (
                         <Button
-                          className="w-full"
+                          key={item.key}
+                          size="sm"
+                          variant={filter === item.key ? "default" : "ghost"}
+                          className={cn(
+                            "h-7 rounded-full px-3 text-[11px] shadow-none",
+                            filter === item.key
+                              ? "bg-[linear-gradient(135deg,#34C79A,#22B889)] text-white shadow-[0_6px_16px_rgba(52,199,154,0.22)]"
+                              : "text-[#71867F]"
+                          )}
+                          onClick={() => setFilter(item.key)}
+                        >
+                          {item.label}
+                        </Button>
+                      ))}
+                      <Button
+                        size="sm"
+                        variant={moreFiltersOpen || filter === "checked" ? "secondary" : "ghost"}
+                        className="h-7 rounded-full px-3 text-[11px] shadow-none"
+                        onClick={() => setMoreFiltersOpen((value) => !value)}
+                      >
+                        更多筛选
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 rounded-full px-3 text-[11px] text-[#71867F] shadow-none"
+                        onClick={() => void handleCheckinAll("failed")}
+                        disabled={
+                          failedAccountsCount === 0 ||
+                          workingScope !== null ||
+                          checkinQueue?.status === "cooldown"
+                        }
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        重试失败
+                      </Button>
+                    </div>
+                  </div>
+                  {moreFiltersOpen ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {EXTRA_FILTERS.map((item) => (
+                        <Button
+                          key={item.key}
+                          size="sm"
+                          variant={filter === item.key ? "secondary" : "outline"}
+                          className="h-7 rounded-full px-3 text-[11px]"
+                          onClick={() => setFilter(item.key)}
+                        >
+                          {item.label}
+                        </Button>
+                      ))}
+                    </div>
+                  ) : null}
+                </CardHeader>
+
+                <CardContent className="flex flex-1 flex-col pt-0">
+                  {loading ? (
+                    <div className="grid gap-1">
+                      {Array.from({ length: 10 }).map((_, index) => (
+                        <div
+                          key={`loading-row-${index}`}
+                          className="h-8 animate-pulse rounded-[0.9rem] bg-[rgba(236,251,246,0.82)]"
+                        />
+                      ))}
+                    </div>
+                  ) : filteredAccounts.length ? (
+                    <div>
+                      <div className="space-y-1">
+                        <div
+                          className={cn(
+                            "hidden items-center gap-2.5 rounded-[0.92rem] border border-[#E6EFEB] bg-[rgba(255,255,255,0.88)] px-3 py-1.5 text-[10px] font-semibold text-[#71867F] dark:border-[#294038] dark:bg-[rgba(19,31,27,0.88)] dark:text-[#8DA69E] xl:grid",
+                            ACCOUNT_TABLE_GRID
+                          )}
+                        >
+                          <span>账号</span>
+                          <span>签到</span>
+                          <span>用量</span>
+                          <span>今日已用</span>
+                          <span>总额度</span>
+                          <span>剩余额度</span>
+                          <span>使用率</span>
+                          <span>查看</span>
+                          <span>操作</span>
+                        </div>
+
+                        {filteredAccounts.map((account) => {
+                          const tone = usageTone(account.usagePercent);
+                          const isSelected = selectedAccount?.username === account.username;
+                          const coolingDown = checkinQueue?.status === "cooldown";
+                          const isWorking = workingAccount === account.username;
+
+                          return (
+                            <motion.article
+                              key={account.username}
+                              variants={itemVariants}
+                              className={cn(
+                                "rounded-[0.96rem] border border-[#E6EFEB] bg-[rgba(255,255,255,0.82)] shadow-[0_6px_16px_rgba(16,42,36,0.04)] transition-colors hover:bg-[#F3FBF7] dark:border-[#263E37] dark:bg-[rgba(19,31,27,0.8)] dark:hover:bg-[#15251F]",
+                                isSelected && "border-[#BFE8DA] shadow-[0_10px_18px_rgba(52,199,154,0.12)]"
+                              )}
+                            >
+                              <div className="flex flex-col gap-1.5 px-3 py-2 xl:hidden">
+                                <div className="flex items-center justify-between gap-3">
+                                  <button
+                                    type="button"
+                                    className="flex min-w-0 items-center gap-2.5 text-left"
+                                    onClick={() => setSelectedUsername(account.username)}
+                                  >
+                                    <span className="grid h-7.5 w-7.5 shrink-0 place-items-center rounded-full bg-[#34C79A] text-[12px] font-black text-white">
+                                      {getAccountInitial(account)}
+                                    </span>
+                                    <div className="min-w-0">
+                                      <p className="truncate text-[13px] font-semibold text-[#102A24] dark:text-[#E7F7F0]">
+                                        {account.displayName || account.username}
+                                      </p>
+                                      <div className="mt-1 flex flex-wrap gap-1.5">
+                                        {getCheckinBadge(account)}
+                                        {getTodayUsedBadge(account.todayUsedStatus)}
+                                      </div>
+                                    </div>
+                                  </button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-6.5 px-3 text-[10px]"
+                                    onClick={() => setSelectedUsername(account.username)}
+                                  >
+                                    查看
+                                  </Button>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-2 text-[10px]">
+                                  <div>
+                                    <p className="text-[#71867F] dark:text-[#89A39B]">已用</p>
+                                    <p className="mt-0.5 font-semibold text-[#102A24] dark:text-[#E7F7F0]">{getTodayUsedText(account)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[#71867F] dark:text-[#89A39B]">总额度</p>
+                                    <p className="mt-0.5 font-semibold text-[#102A24] dark:text-[#E7F7F0]">
+                                      {money(account.totalQuota, account.currencySymbol)}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[#71867F] dark:text-[#89A39B]">剩余额度</p>
+                                    <p className="mt-0.5 font-semibold text-[#102A24] dark:text-[#E7F7F0]">
+                                      {money(account.remainingQuota, account.currencySymbol)}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0 flex-1 rounded-[0.9rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.78)] px-3 py-1.5 dark:border-[#294038] dark:bg-[rgba(20,31,27,0.86)]">
+                                    <div className="flex items-center justify-between gap-2 text-[10px] text-[#71867F] dark:text-[#89A39B]">
+                                      <span>使用率</span>
+                                      <span className={cn("font-semibold", tone.text)}>
+                                        {percent(account.usagePercent)}
+                                      </span>
+                                    </div>
+                                    <p className="mt-1 truncate text-[10px] text-[#9AABA5] dark:text-[#667B73]">
+                                      已用 {money(account.todayUsed ?? 0, account.currencySymbol)}
+                                    </p>
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    variant={account.signedToday ? "secondary" : "default"}
+                                    className="h-6.5 px-3 text-[10px]"
+                                    disabled={account.signedToday || coolingDown || isWorking}
+                                    onClick={() => void handleSingleCheckin(account)}
+                                  >
+                                    {isWorking ? (
+                                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                      <CheckCircle2 className="h-3.5 w-3.5" />
+                                    )}
+                                    {getSingleActionLabel(account, isWorking, Boolean(coolingDown))}
+                                  </Button>
+                                </div>
+                              </div>
+                              <div
+                                className={cn(
+                                  "hidden items-center gap-2.5 px-3 py-1.5 text-[10px] text-[#2F4A43] dark:text-[#D8EEE6] xl:grid",
+                                  ACCOUNT_TABLE_GRID
+                                )}
+                              >
+                                <button
+                                  type="button"
+                                  className="flex min-w-0 items-center gap-2.5 text-left"
+                                  onClick={() => setSelectedUsername(account.username)}
+                                >
+                                  <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#34C79A] text-[12px] font-black text-white">
+                                    {getAccountInitial(account)}
+                                  </span>
+                                  <div className="min-w-0">
+                                    <p className="truncate text-[12px] font-semibold text-[#102A24] dark:text-[#E7F7F0]">
+                                      {account.displayName || account.username}
+                                    </p>
+                                    <p className="mt-0.5 truncate text-[9px] text-[#71867F] dark:text-[#89A39B]">
+                                      {account.signedToday ? "签到正常且用量当日清" : getAccountQueueHint(account, checkinQueue, usageQueue)}
+                                    </p>
+                                  </div>
+                                </button>
+                                <div>{getCheckinBadge(account)}</div>
+                                <div>{getTodayUsedBadge(account.todayUsedStatus)}</div>
+                                <div className="font-semibold text-[#102A24] dark:text-[#E7F7F0]">
+                                  {getTodayUsedText(account)}
+                                </div>
+                                <div className="font-semibold text-[#102A24] dark:text-[#E7F7F0]">
+                                  {money(account.totalQuota, account.currencySymbol)}
+                                </div>
+                                <div className="font-semibold text-[#102A24] dark:text-[#E7F7F0]">
+                                  {money(account.remainingQuota, account.currencySymbol)}
+                                </div>
+                                <div className="min-w-0">
+                                  <span className={cn("block whitespace-nowrap font-semibold", tone.text)}>
+                                    {percent(account.usagePercent)}
+                                  </span>
+                                </div>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-6 px-3 text-[10px]"
+                                  onClick={() => setSelectedUsername(account.username)}
+                                >
+                                  查看
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant={account.signedToday ? "secondary" : "default"}
+                                  className="h-6 px-3 text-[10px]"
+                                  disabled={account.signedToday || coolingDown || isWorking}
+                                  onClick={() => void handleSingleCheckin(account)}
+                                >
+                                  {isWorking ? (
+                                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <CheckCircle2 className="h-3.5 w-3.5" />
+                                  )}
+                                  {getSingleActionLabel(account, isWorking, Boolean(coolingDown))}
+                                </Button>
+                              </div>
+                            </motion.article>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-center rounded-[1.1rem] border border-dashed border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] p-8 text-center text-sm text-muted-foreground dark:border-[#294038] dark:bg-[rgba(18,28,24,0.82)]">
+                      当前筛选条件下没有账号数据。
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </motion.section>
+          </section>
+
+          <aside className="flex h-full flex-col gap-2.5 xl:col-span-4">
+            <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="shrink-0">
+                <Card className="border-[#DDEAE5] bg-[rgba(255,255,255,0.86)] shadow-[0_12px_32px_rgba(16,42,36,0.06)] dark:border-[#233A33] dark:bg-[rgba(18,28,24,0.88)] dark:shadow-[0_16px_32px_rgba(0,0,0,0.3)]">
+                <CardHeader className="pb-2.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <CardTitle className="text-[1.08rem] text-[#102A24] dark:text-[#E7F7F0]">账号详情</CardTitle>
+                      <CardDescription className="mt-1 text-[12px] text-[#71867F] dark:text-[#8DA69E]">
+                        聚焦当前账号的关键指标，监控状态和同步状态。
+                      </CardDescription>
+                    </div>
+                    <div className="min-w-[126px]">
+                      <Select value={selectedAccount?.username ?? ""} onValueChange={setSelectedUsername}>
+                        <SelectTrigger className="h-8 rounded-full border-[#DDEAE5] bg-[rgba(255,255,255,0.82)] px-3 text-[11px] shadow-none dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]">
+                          <SelectValue placeholder="切换账号" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {dashboard?.accounts.map((account) => (
+                            <SelectItem value={account.username} key={account.username}>
+                              {account.displayName || account.username}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  {selectedAccount ? (
+                    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-2.5">
+                      <div className="rounded-[1.18rem] border border-white/20 bg-[linear-gradient(135deg,#1E7E63_0%,#22A87F_50%,#2DC495_100%)] p-3.5 text-white shadow-[0_14px_32px_rgba(0,0,0,0.24)] dark:border-white/14">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[rgba(255,255,255,0.94)] text-[1rem] font-black text-[#34C79A]">
+                              {getAccountInitial(selectedAccount)}
+                            </span>
+                            <div className="min-w-0">
+                              <p className="text-[11px] font-semibold tracking-[0.14em] text-white/72">
+                                当前焦点账号
+                              </p>
+                              <h3 className="mt-1 truncate text-[1.34rem] font-black tracking-tight">
+                                {selectedAccount.displayName || selectedAccount.username}
+                              </h3>
+                              <div className="mt-1 flex flex-wrap items-center gap-2">
+                                {getCheckinBadge(selectedAccount)}
+                                <span className="text-[11px] text-white/78">{getAccountQueueHint(selectedAccount, checkinQueue, usageQueue)}</span>
+                              </div>
+                            </div>
+                          </div>
+                          <Badge className="border-white/24 bg-white/18 text-white">
+                            {getCheckinStatusText(selectedAccount)}
+                          </Badge>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-3 gap-2">
+                          {selectedAccountMetrics.map((metric) => (
+                            <div
+                              key={metric.label}
+                              className="rounded-[0.95rem] border border-white/30 bg-[rgba(255,255,255,0.18)] px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]"
+                            >
+                              <p className="text-[11px] text-white/74">{metric.label}</p>
+                              <p className="mt-1 text-[0.96rem] font-black">{metric.value}</p>
+                              <p className="mt-1 text-[10px] text-white/70">{metric.hint}</p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="mt-3">
+                          <div className="flex items-center justify-between gap-3 text-[11px] text-white/82">
+                            <span>使用率进度</span>
+                            <span>{percent(selectedAccount.usagePercent)}</span>
+                          </div>
+                          <Progress
+                            value={selectedAccount.usagePercent}
+                            indicatorClassName={selectedUsageTone.bar}
+                            className="mt-1.5 h-2 bg-white/18"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid auto-rows-fr gap-2 sm:grid-cols-2">
+                        {selectedAccountCoreFields.map((field) => {
+                          const Icon = field.icon;
+                          return (
+                            <div
+                              key={field.label}
+                              className="min-h-[94px] rounded-[0.96rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.84)] px-3.5 py-2.5 shadow-[0_10px_18px_rgba(16,42,36,0.05)] dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)] dark:shadow-[0_12px_18px_rgba(0,0,0,0.22)]"
+                            >
+                              <div className="flex h-full min-w-0 items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-[11px] text-[#71867F] dark:text-[#89A39B]">{field.label}</p>
+                                  <p className="mt-1 break-words text-[0.95rem] font-semibold leading-snug text-[#102A24] dark:text-[#E7F7F0]">
+                                    {field.value}
+                                  </p>
+                                  <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-[#9AABA5] dark:text-[#667B73]">
+                                    {field.hint}
+                                  </p>
+                                </div>
+                                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-[#BDEDDD] bg-[#ECFBF6] text-[#34C79A] shadow-[inset_0_1px_0_rgba(255,255,255,0.7)]">
+                                  <Icon className="h-4 w-4" />
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6.5 rounded-full px-3 text-[10px]"
+                          onClick={() => setDetailExpanded((value) => !value)}
+                        >
+                          {detailExpanded ? "收起更多详情" : "更多详情"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="h-6.5 px-3 text-[10px]"
                           disabled={
                             selectedAccount.signedToday ||
                             checkinQueue?.status === "cooldown" ||
@@ -940,9 +1653,9 @@ export default function QuotaMonitorPage() {
                           onClick={() => void handleSingleCheckin(selectedAccount)}
                         >
                           {workingAccount === selectedAccount.username ? (
-                            <LoaderCircle className="h-4 w-4 animate-spin" />
+                            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
                           ) : (
-                            <CheckCircle2 className="h-4 w-4" />
+                            <CheckCircle2 className="h-3.5 w-3.5" />
                           )}
                           {getSingleActionLabel(
                             selectedAccount,
@@ -950,110 +1663,244 @@ export default function QuotaMonitorPage() {
                             checkinQueue?.status === "cooldown"
                           )}
                         </Button>
-                      </motion.div>
+                      </div>
+
+                      {detailExpanded ? (
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {selectedAccountExtraFields.map((field) => (
+                            <QueueMetaCell key={field.label} label={field.label} value={field.value} />
+                          ))}
+                        </div>
+                      ) : null}
+                    </motion.div>
+                  ) : (
+                    <div className="rounded-[1.1rem] border border-dashed border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] p-8 text-center text-sm text-muted-foreground dark:border-[#294038] dark:bg-[rgba(18,28,24,0.82)]">
+                      选择账号后显示详情。
                     </div>
-                  </motion.div>
-                ) : (
-                  <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
-                    选择账号后显示详情。
+                  )}
+                </CardContent>
+                </Card>
+            </motion.section>
+
+            <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex-1">
+              <Card className="flex h-full min-h-[252px] flex-col border-[#DDEAE5] bg-[rgba(255,255,255,0.86)] shadow-[0_12px_32px_rgba(16,42,36,0.06)] dark:border-[#233A33] dark:bg-[rgba(18,28,24,0.88)] dark:shadow-[0_16px_32px_rgba(0,0,0,0.3)]">
+                <CardHeader className="pb-2.5">
+                  <div className="space-y-3">
+                    <div className="flex items-end justify-between gap-3">
+                      <div>
+                        <CardTitle className="text-[1.08rem] text-[#102A24] dark:text-[#E7F7F0]">数据分析</CardTitle>
+                        <CardDescription className="mt-1 text-[12px] text-[#71867F] dark:text-[#8DA69E]">
+                          对比总账号今日已用与剩余额度，默认只展示一个紧凑图表。
+                        </CardDescription>
+                      </div>
+                      <Badge variant="outline" className="px-3 py-1 text-[11px]">
+                        最近 {trendData.length || comparisonData.length} 条数据
+                      </Badge>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 rounded-full border border-[#DDEAE5] bg-[rgba(255,255,255,0.62)] p-1 dark:border-[#294038] dark:bg-[rgba(20,31,27,0.82)]">
+                      {ANALYSIS_TABS.map((tab) => (
+                        <Button
+                          key={tab.key}
+                          size="sm"
+                          variant={analysisTab === tab.key ? "default" : "ghost"}
+                          className={cn(
+                            "h-7 rounded-full px-3 text-[11px] shadow-none",
+                            analysisTab === tab.key
+                              ? "bg-[linear-gradient(135deg,#34C79A,#22B889)] text-white shadow-[0_6px_16px_rgba(52,199,154,0.22)]"
+                              : "text-[#71867F]"
+                          )}
+                          onClick={() => setAnalysisTab(tab.key)}
+                        >
+                          {tab.label}
+                        </Button>
+                      ))}
+                    </div>
                   </div>
-                )}
-              </CardContent>
-            </Card>
+                </CardHeader>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>账号额度对比</CardTitle>
-                <CardDescription>对比每个账号的今日已用、剩余额度和主余额。</CardDescription>
-              </CardHeader>
-              <CardContent className="h-[330px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={comparisonData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                    <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 12 }} />
-                    <Tooltip
-                      formatter={(value) => money(Number(value ?? 0), currencySymbol)}
-                      contentStyle={{
-                        borderRadius: "16px",
-                        border: "1px solid hsl(var(--border))",
-                        background: "hsl(var(--popover))"
-                      }}
-                    />
-                    <Bar dataKey="todayUsed" name="今日已用" fill="hsl(var(--accent))" radius={[10, 10, 0, 0]} />
-                    <Bar
-                      dataKey="remainingQuota"
-                      name="剩余额度"
-                      fill="hsl(var(--primary))"
-                      radius={[10, 10, 0, 0]}
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
+                <CardContent className="flex flex-1 flex-col pt-0">
+                  <div className="mb-1.5 flex items-center justify-end gap-4 text-[10px] text-[#71867F] dark:text-[#89A39B]">
+                    {analysisTab === "comparison" ? (
+                      <>
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="h-2 w-2 rounded-full bg-[#34C79A]" />
+                          今日已用
+                        </span>
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="h-2 w-2 rounded-full bg-[#D7E5DF]" />
+                          剩余额度
+                        </span>
+                      </>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full bg-[#34C79A]" />
+                        {analysisMeta.label}
+                      </span>
+                    )}
+                  </div>
+                  <div className="min-h-[260px] flex-1 rounded-[1.08rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.82)] p-2 dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)]">
+                    {analysisTab === "comparison" ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={comparisonData} barGap={8} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                          <CartesianGrid stroke={chartGridStroke} strokeOpacity={1} vertical={false} />
+                          <XAxis dataKey="name" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                          <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                          <Tooltip
+                            formatter={(value) => money(Number(value ?? 0), currencySymbol)}
+                            contentStyle={chartTooltipStyle}
+                          />
+                          <Bar dataKey="todayUsed" name="今日已用" fill={chartUsedColor} radius={[6, 6, 0, 0]} maxBarSize={20} />
+                          <Bar dataKey="remainingQuota" name="剩余额度" fill={chartRemainingColor} radius={[6, 6, 0, 0]} maxBarSize={20} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : null}
 
-            <Card>
-              <CardHeader>
-                <CardTitle>签到趋势图</CardTitle>
-                <CardDescription>展示最近 7 天签到收益和今日同步到的用量。</CardDescription>
-              </CardHeader>
-              <CardContent className="h-[330px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={dashboard?.trend ?? []}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                    <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 12 }} />
-                    <Tooltip
-                      formatter={(value) => money(Number(value ?? 0), currencySymbol)}
-                      contentStyle={{
-                        borderRadius: "16px",
-                        border: "1px solid hsl(var(--border))",
-                        background: "hsl(var(--popover))"
-                      }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="checkinIncome"
-                      name="签到收益"
-                      stroke="hsl(var(--primary))"
-                      strokeWidth={3}
-                      dot={{ r: 4 }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="usedQuota"
-                      name="已用额度"
-                      stroke="hsl(var(--accent))"
-                      strokeWidth={3}
-                      dot={{ r: 4 }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
+                    {analysisTab === "checkinTrend" ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={trendData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                          <CartesianGrid stroke={chartGridStroke} strokeOpacity={1} vertical={false} />
+                          <XAxis dataKey="date" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                          <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                          <Tooltip
+                            formatter={(value) => money(Number(value ?? 0), currencySymbol)}
+                            contentStyle={chartTooltipStyle}
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="checkinIncome"
+                            name="签到收益"
+                            stroke="#34C79A"
+                            strokeWidth={2.5}
+                            dot={{ r: 3, fill: "#34C79A" }}
+                            activeDot={{ r: 4.5 }}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ) : null}
 
-            <Card>
-              <CardHeader>
-                <CardTitle>运维建议</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm text-muted-foreground">
-                <div className="flex items-start gap-3 rounded-2xl bg-background/55 px-4 py-3">
-                  <Database className="mt-0.5 h-4 w-4 text-primary" />
-                  <span>下一步建议补上历史批次记录，便于看出哪些账号最容易触发限流。</span>
-                </div>
-                <div className="flex items-start gap-3 rounded-2xl bg-background/55 px-4 py-3">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 text-accent" />
-                  <span>可以继续增加账号分组与优先级，让高频账号优先签到和优先同步。</span>
-                </div>
-                <div className="flex items-start gap-3 rounded-2xl bg-background/55 px-4 py-3">
-                  <ShieldAlert className="mt-0.5 h-4 w-4 text-destructive" />
-                  <span>建议后续加入连续 429、登录失效和同步超时的明显告警条。</span>
-                </div>
-              </CardContent>
-            </Card>
+                    {analysisTab === "usageTrend" ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={trendData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                          <CartesianGrid stroke={chartGridStroke} strokeOpacity={1} vertical={false} />
+                          <XAxis dataKey="date" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                          <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                          <Tooltip
+                            formatter={(value) => money(Number(value ?? 0), currencySymbol)}
+                            contentStyle={chartTooltipStyle}
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="usedQuota"
+                            name="已用额度"
+                            stroke="#34C79A"
+                            strokeWidth={2.5}
+                            dot={{ r: 3, fill: "#34C79A" }}
+                            activeDot={{ r: 4.5 }}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ) : null}
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.section>
           </aside>
         </div>
       </div>
+
+      {importModalOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(16,42,36,0.18)] px-4 py-6 backdrop-blur-sm"
+          onClick={() => setImportModalOpen(false)}
+        >
+          <motion.div
+            initial={{ opacity: 0, y: 12, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            className="w-full max-w-3xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <Card className="max-h-[88vh] overflow-hidden">
+              <CardHeader>
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <CardTitle>账号导入</CardTitle>
+                    <CardDescription>支持直接粘贴账号密码，或导入 `txt/json` 文件，保存后立即刷新看板。</CardDescription>
+                  </div>
+                  <Button variant="ghost" size="icon" onClick={() => setImportModalOpen(false)}>
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4 overflow-y-auto pb-6">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".txt,.json,application/json,text/plain"
+                  className="hidden"
+                  onChange={(event) => void handleImportFileChange(event)}
+                />
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <FileUp className="h-4 w-4" />
+                    选择 txt/json
+                  </Button>
+                  <Badge variant="outline" className="max-w-full truncate">
+                    {accountImportFileName || "未选择文件，可直接粘贴内容"}
+                  </Badge>
+                  {(accountImportDraft || accountImportFileName) ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        setAccountImportDraft("");
+                        setAccountImportFileName("");
+                      }}
+                    >
+                      清空
+                    </Button>
+                  ) : null}
+                </div>
+
+                <textarea
+                  value={accountImportDraft}
+                  onChange={(event) => setAccountImportDraft(event.target.value)}
+                  rows={10}
+                  placeholder={ACCOUNT_IMPORT_PLACEHOLDER}
+                  className="min-h-[260px] w-full rounded-2xl border border-[#DDEAE5] bg-[rgba(255,255,255,0.84)] px-4 py-3 text-sm text-[#2F4A43] outline-none transition placeholder:text-[#9AABA5] focus:border-[#34C79A] focus:ring-2 focus:ring-[#34C79A]/15 dark:border-[#294038] dark:bg-[rgba(19,31,27,0.92)] dark:text-[#D8EEE6] dark:placeholder:text-[#7F9990]"
+                />
+
+                <div className="flex flex-col gap-3 text-xs text-muted-foreground">
+                  <span>当前保存路径：{dashboard?.accountFile || "/Users/mac/Auto_CW/accounts.txt"}</span>
+                  <span>支持格式：`username,password`、`账号：xxx，密码：yyy`、JSON 数组对象。</span>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span className="text-xs text-muted-foreground">
+                    保存时会覆盖当前账号文件，请确认内容无误。
+                  </span>
+                  <Button
+                    onClick={() => void handleImportAccounts()}
+                    disabled={importingAccounts || !accountImportDraft.trim()}
+                  >
+                    {importingAccounts ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <FileUp className="h-4 w-4" />
+                    )}
+                    保存账号
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+        </div>
+      ) : null}
     </main>
   );
 }

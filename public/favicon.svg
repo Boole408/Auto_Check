@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="cwOpsGradient" x1="10" y1="10" x2="54" y2="54" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#34C79A" />
+      <stop offset="1" stop-color="#7BE3C2" />
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="52" height="52" rx="16" fill="url(#cwOpsGradient)" />
+  <path
+    d="M35.8 14 22 33.2h12.4L31.6 50 45 30.8H32.6L35.8 14Z"
+    fill="#fff"
+  />
+</svg>

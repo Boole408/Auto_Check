@@ -16,6 +16,10 @@ const DEFAULT_SESSION_TTL = 6 * 60 * 60 * 1000;
 const DEFAULT_RATE_LIMIT_COOLDOWN = 180_000;
 const DEFAULT_USAGE_SYNC_DELAY = 4_000;
 const DEFAULT_TIMEOUT = 15_000;
+const DEFAULT_APP_TIMEZONE = "Asia/Shanghai";
+const DEFAULT_AUTO_CHECKIN_TIME = "00:01";
+const DEFAULT_AUTO_CHECKIN_RETRY_MINUTES = 10;
+const AUTO_CHECKIN_HEARTBEAT_MS = 30_000;
 
 const CHECKIN_INITIAL_DELAY = 2_500;
 const CHECKIN_SUCCESS_STEP = 250;
@@ -53,6 +57,8 @@ let rateLimitUntil = 0;
 
 const checkinQueue = createCheckinQueueState();
 const usageSyncQueue = createUsageSyncQueueState();
+const dashboardAlertsState = createDashboardAlertsState();
+const autoCheckinScheduler = createAutoCheckinSchedulerState();
 
 function createQueueProgress() {
   return {
@@ -98,6 +104,93 @@ function createUsageSyncQueueState() {
   };
 }
 
+function createDashboardAlertsState() {
+  return {
+    rateLimit: {
+      streak: 0,
+      updatedAt: null
+    },
+    authFailed: {
+      usernames: new Set(),
+      updatedAt: null
+    },
+    syncTimeout: {
+      usernames: new Set(),
+      updatedAt: null
+    }
+  };
+}
+
+function createAutoCheckinStore() {
+  return {
+    lastTriggeredDay: null,
+    lastTriggeredAt: null,
+    lastAttemptAt: null,
+    lastErrorMessage: null
+  };
+}
+
+function createAutoCheckinSchedulerState() {
+  return {
+    timer: null,
+    running: false,
+    store: createAutoCheckinStore()
+  };
+}
+
+function rememberAlertUsername(collection, username) {
+  if (!username) return;
+  collection.add(username);
+}
+
+function forgetAlertUsername(collection, username) {
+  if (!username) return;
+  collection.delete(username);
+}
+
+function isTimeoutError(error) {
+  return (
+    error?.code === "ECONNABORTED" ||
+    error?.status === 408 ||
+    error?.response?.status === 408 ||
+    /timeout|timed out|超时/i.test(error?.message || "")
+  );
+}
+
+function registerRateLimitAlert() {
+  dashboardAlertsState.rateLimit.streak += 1;
+  dashboardAlertsState.rateLimit.updatedAt = nowIso();
+}
+
+function clearRateLimitAlert() {
+  dashboardAlertsState.rateLimit.streak = 0;
+  dashboardAlertsState.rateLimit.updatedAt = null;
+}
+
+function registerAuthFailedAlert(username) {
+  rememberAlertUsername(dashboardAlertsState.authFailed.usernames, username);
+  dashboardAlertsState.authFailed.updatedAt = nowIso();
+}
+
+function clearAuthFailedAlert(username) {
+  forgetAlertUsername(dashboardAlertsState.authFailed.usernames, username);
+  if (!dashboardAlertsState.authFailed.usernames.size) {
+    dashboardAlertsState.authFailed.updatedAt = null;
+  }
+}
+
+function registerSyncTimeoutAlert(username) {
+  rememberAlertUsername(dashboardAlertsState.syncTimeout.usernames, username);
+  dashboardAlertsState.syncTimeout.updatedAt = nowIso();
+}
+
+function clearSyncTimeoutAlert(username) {
+  forgetAlertUsername(dashboardAlertsState.syncTimeout.usernames, username);
+  if (!dashboardAlertsState.syncTimeout.usernames.size) {
+    dashboardAlertsState.syncTimeout.updatedAt = null;
+  }
+}
+
 function debugLog(message, payload = {}) {
   if (process.env.CAOWO_DEBUG === "1") {
     console.warn(`[caowo-debug] ${message}`, JSON.stringify(payload));
@@ -107,6 +200,44 @@ function debugLog(message, payload = {}) {
 function getNumberEnv(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function getBooleanEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallback;
+  return !["0", "false", "no", "off"].includes(String(raw).trim().toLowerCase());
+}
+
+function isValidTimeZone(timeZone) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeAutoCheckinTime(value) {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(value || "").trim());
+  return match ? `${match[1]}:${match[2]}` : DEFAULT_AUTO_CHECKIN_TIME;
+}
+
+function getAppTimeZone() {
+  const configured = process.env.CAOWO_AUTO_CHECKIN_TZ || DEFAULT_APP_TIMEZONE;
+  return isValidTimeZone(configured) ? configured : DEFAULT_APP_TIMEZONE;
+}
+
+function getAutoCheckinConfig() {
+  return {
+    enabled: getBooleanEnv("CAOWO_AUTO_CHECKIN_ENABLED", true),
+    time: normalizeAutoCheckinTime(process.env.CAOWO_AUTO_CHECKIN_TIME),
+    timezone: getAppTimeZone(),
+    catchUpEnabled: getBooleanEnv("CAOWO_AUTO_CHECKIN_CATCH_UP", true),
+    retryMinutes: Math.max(
+      1,
+      getNumberEnv("CAOWO_AUTO_CHECKIN_RETRY_MINUTES", DEFAULT_AUTO_CHECKIN_RETRY_MINUTES)
+    )
+  };
 }
 
 function getDashboardCacheTtl() {
@@ -125,26 +256,188 @@ function getSessionStorePath() {
   return path.resolve(process.cwd(), ".cache", "caowo-sessions.json");
 }
 
+function getAutoCheckinStorePath() {
+  return path.resolve(process.cwd(), ".cache", "caowo-auto-checkin.json");
+}
+
+const zonedFormatterCache = new Map();
+const zonedOffsetFormatterCache = new Map();
+
+function getZonedDateFormatter(timeZone) {
+  if (!zonedFormatterCache.has(timeZone)) {
+    zonedFormatterCache.set(
+      timeZone,
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        hour12: false,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      })
+    );
+  }
+  return zonedFormatterCache.get(timeZone);
+}
+
+function getZonedOffsetFormatter(timeZone) {
+  if (!zonedOffsetFormatterCache.has(timeZone)) {
+    zonedOffsetFormatterCache.set(
+      timeZone,
+      new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        timeZoneName: "shortOffset",
+        hour: "2-digit"
+      })
+    );
+  }
+  return zonedOffsetFormatterCache.get(timeZone);
+}
+
+function getZonedDateParts(date = new Date(), timeZone = getAppTimeZone()) {
+  const parts = {};
+  for (const part of getZonedDateFormatter(timeZone).formatToParts(date)) {
+    if (part.type === "year") parts.year = Number(part.value);
+    if (part.type === "month") parts.month = Number(part.value);
+    if (part.type === "day") parts.day = Number(part.value);
+    if (part.type === "hour") parts.hour = Number(part.value);
+    if (part.type === "minute") parts.minute = Number(part.value);
+    if (part.type === "second") parts.second = Number(part.value);
+  }
+  return {
+    year: parts.year || 0,
+    month: parts.month || 1,
+    day: parts.day || 1,
+    hour: parts.hour || 0,
+    minute: parts.minute || 0,
+    second: parts.second || 0
+  };
+}
+
+function getTimeZoneOffsetMinutes(date = new Date(), timeZone = getAppTimeZone()) {
+  const timeZoneName = getZonedOffsetFormatter(timeZone)
+    .formatToParts(date)
+    .find((part) => part.type === "timeZoneName")?.value;
+
+  if (!timeZoneName || timeZoneName === "GMT") return 0;
+  const match = /^GMT([+-])(\d{1,2})(?::?(\d{2}))?$/.exec(timeZoneName);
+  if (!match) return 0;
+  const sign = match[1] === "-" ? -1 : 1;
+  const hours = Number(match[2] || 0);
+  const minutes = Number(match[3] || 0);
+  return sign * (hours * 60 + minutes);
+}
+
+function zonedDateTimeToDate(parts, timeZone = getAppTimeZone()) {
+  const naiveUtc = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour || 0,
+    parts.minute || 0,
+    parts.second || 0,
+    parts.millisecond || 0
+  );
+  let offset = getTimeZoneOffsetMinutes(new Date(naiveUtc), timeZone);
+  let candidate = new Date(naiveUtc - offset * 60 * 1000);
+  const correctedOffset = getTimeZoneOffsetMinutes(candidate, timeZone);
+  if (correctedOffset !== offset) {
+    offset = correctedOffset;
+    candidate = new Date(naiveUtc - offset * 60 * 1000);
+  }
+  return candidate;
+}
+
+function formatDayKey(parts) {
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(
+    2,
+    "0"
+  )}`;
+}
+
+function formatClock(parts) {
+  return `${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}`;
+}
+
+function getDayKeyForDate(date = new Date(), timeZone = getAppTimeZone()) {
+  return formatDayKey(getZonedDateParts(date, timeZone));
+}
+
+function getMonthKeyForDate(date = new Date(), timeZone = getAppTimeZone()) {
+  const parts = getZonedDateParts(date, timeZone);
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}`;
+}
+
+function getTargetTimeParts(time = DEFAULT_AUTO_CHECKIN_TIME) {
+  const [hour, minute] = normalizeAutoCheckinTime(time).split(":").map(Number);
+  return { hour, minute };
+}
+
+function getOffsetDayParts(parts, offset, timeZone = getAppTimeZone()) {
+  const anchor = zonedDateTimeToDate(
+    {
+      year: parts.year,
+      month: parts.month,
+      day: parts.day,
+      hour: 12,
+      minute: 0,
+      second: 0
+    },
+    timeZone
+  );
+  anchor.setUTCDate(anchor.getUTCDate() + offset);
+  return getZonedDateParts(anchor, timeZone);
+}
+
+function getNextDayParts(parts, timeZone = getAppTimeZone()) {
+  return getOffsetDayParts(parts, 1, timeZone);
+}
+
+function getScheduledDateForDay(parts, time = DEFAULT_AUTO_CHECKIN_TIME, timeZone = getAppTimeZone()) {
+  const target = getTargetTimeParts(time);
+  return zonedDateTimeToDate(
+    {
+      year: parts.year,
+      month: parts.month,
+      day: parts.day,
+      hour: target.hour,
+      minute: target.minute,
+      second: 0
+    },
+    timeZone
+  );
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
 
 function currentDayKey() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
-    now.getDate()
-  ).padStart(2, "0")}`;
+  return getDayKeyForDate(new Date(), getAppTimeZone());
 }
 
 function currentMonthKey() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  return getMonthKeyForDate(new Date(), getAppTimeZone());
 }
 
 function todayRangeSeconds() {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  const timeZone = getAppTimeZone();
+  const nowParts = getZonedDateParts(new Date(), timeZone);
+  const start = getScheduledDateForDay(nowParts, "00:00", timeZone);
+  const end = zonedDateTimeToDate(
+    {
+      year: nowParts.year,
+      month: nowParts.month,
+      day: nowParts.day,
+      hour: 23,
+      minute: 59,
+      second: 59,
+      millisecond: 999
+    },
+    timeZone
+  );
   return {
     start: Math.floor(start.getTime() / 1000),
     end: Math.floor(end.getTime() / 1000)
@@ -196,6 +489,96 @@ function writeSessionStore(store) {
   } catch {
     // Session persistence is only an optimization.
   }
+}
+
+function readAutoCheckinStore() {
+  try {
+    const filePath = getAutoCheckinStorePath();
+    if (!fs.existsSync(filePath)) return createAutoCheckinStore();
+    return {
+      ...createAutoCheckinStore(),
+      ...JSON.parse(fs.readFileSync(filePath, "utf8"))
+    };
+  } catch {
+    return createAutoCheckinStore();
+  }
+}
+
+function writeAutoCheckinStore(store) {
+  try {
+    const filePath = getAutoCheckinStorePath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(store, null, 2), "utf8");
+  } catch {
+    // Auto check-in persistence is best effort.
+  }
+}
+
+function updateAutoCheckinStore(patch) {
+  autoCheckinScheduler.store = {
+    ...createAutoCheckinStore(),
+    ...autoCheckinScheduler.store,
+    ...patch
+  };
+  writeAutoCheckinStore(autoCheckinScheduler.store);
+  clearDashboardCache();
+  return autoCheckinScheduler.store;
+}
+
+function isSameZonedDay(left, right, timeZone = getAppTimeZone()) {
+  if (!left || !right) return false;
+  return getDayKeyForDate(left, timeZone) === getDayKeyForDate(right, timeZone);
+}
+
+function isAtOrAfterScheduledTime(parts, time = DEFAULT_AUTO_CHECKIN_TIME) {
+  return formatClock(parts) >= normalizeAutoCheckinTime(time);
+}
+
+function getNextAutoCheckinRunAt(
+  config = getAutoCheckinConfig(),
+  store = autoCheckinScheduler.store,
+  now = new Date()
+) {
+  if (!config.enabled) return null;
+
+  const todayParts = getZonedDateParts(now, config.timezone);
+  const todayKey = formatDayKey(todayParts);
+  const scheduledToday = getScheduledDateForDay(todayParts, config.time, config.timezone);
+
+  if (store.lastTriggeredDay === todayKey) {
+    return getScheduledDateForDay(
+      getNextDayParts(todayParts, config.timezone),
+      config.time,
+      config.timezone
+    ).toISOString();
+  }
+
+  const lastAttemptAt = store.lastAttemptAt ? new Date(store.lastAttemptAt) : null;
+  const shouldRetryToday =
+    Boolean(store.lastErrorMessage) &&
+    lastAttemptAt &&
+    isSameZonedDay(lastAttemptAt, now, config.timezone);
+
+  if (shouldRetryToday) {
+    const retryAt = new Date(lastAttemptAt.getTime() + config.retryMinutes * 60 * 1000);
+    if (isAtOrAfterScheduledTime(todayParts, config.time) && config.catchUpEnabled) {
+      return new Date(Math.max(retryAt.getTime(), now.getTime())).toISOString();
+    }
+  }
+
+  if (scheduledToday.getTime() > now.getTime()) {
+    return scheduledToday.toISOString();
+  }
+
+  if (config.catchUpEnabled) {
+    return now.toISOString();
+  }
+
+  return getScheduledDateForDay(
+    getNextDayParts(todayParts, config.timezone),
+    config.time,
+    config.timezone
+  ).toISOString();
 }
 
 function unwrap(payload) {
@@ -274,6 +657,7 @@ function assertHttpOk(response, context) {
       response.data
     );
   }
+  clearRateLimitAlert();
   return response;
 }
 
@@ -303,6 +687,7 @@ function sessionHeaders(session) {
 }
 
 function enterRateLimitCooldown(error) {
+  registerRateLimitAlert();
   rateLimitUntil = Date.now() + getRateLimitCooldownMs();
   checkinQueue.cooldownUntil = new Date(rateLimitUntil).toISOString();
   usageSyncQueue.cooldownUntil = new Date(rateLimitUntil).toISOString();
@@ -613,6 +998,7 @@ async function loginAccount(account, { force = false } = {}) {
   );
 
   if (!isSuccessEnvelope(response.data)) {
+    registerAuthFailedAlert(account.username);
     throw new CaowoError(messageFrom(response.data, "账号或密码错误"), 401, "AUTH_FAILED");
   }
 
@@ -646,13 +1032,23 @@ async function loginAccount(account, { force = false } = {}) {
   const sessionStore = readSessionStore();
   sessionStore[key] = session;
   writeSessionStore(sessionStore);
+  clearAuthFailedAlert(account.username);
   return session;
 }
 
 async function withAccountSession(account, worker) {
   let lastError = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const session = await loginAccount(account, { force: attempt > 0 });
+    let session;
+    try {
+      session = await loginAccount(account, { force: attempt > 0 });
+    } catch (error) {
+      if (error?.code === "AUTH_FAILED") {
+        registerAuthFailedAlert(account.username);
+      }
+      throw error;
+    }
+
     try {
       return await worker(session);
     } catch (error) {
@@ -660,6 +1056,9 @@ async function withAccountSession(account, worker) {
       if (error?.code === "AUTH_FAILED" && attempt === 0) {
         invalidateSession(account);
         continue;
+      }
+      if (error?.code === "AUTH_FAILED") {
+        registerAuthFailedAlert(account.username);
       }
       throw error;
     }
@@ -767,11 +1166,15 @@ function normalizeUsageStats(payload = {}) {
   const rows = Array.isArray(data) ? data : data.items || data.logs || data.records || data.data;
   const directValue = toNumber(
     readPath(data, [
+      "quota",
       "today_used_quota",
       "todayUsedQuota",
       "today_used",
       "used_quota_today",
+      "usedQuota",
+      "used_quota",
       "quota_today",
+      "usage_quota",
       "consume_quota",
       "amount"
     ]),
@@ -933,6 +1336,8 @@ async function syncAccountUsage(account) {
       return state;
     });
 
+    clearAuthFailedAlert(account.username);
+    clearSyncTimeoutAlert(account.username);
     usageSyncQueue.syncedUsernames.add(account.username);
     usageSyncQueue.failedUsernames.delete(account.username);
     return getAccountState(account);
@@ -1009,6 +1414,10 @@ function getUsageSyncProgress() {
   return progress;
 }
 
+function getUsagePendingCount() {
+  return getUsageSyncProgress().pending;
+}
+
 function serializeCheckinQueue() {
   let status = checkinQueue.status;
   if (status !== "running" && isCoolingDown() && getCheckinQueueProgress().pending > 0) {
@@ -1029,14 +1438,20 @@ function serializeCheckinQueue() {
 }
 
 function serializeUsageSyncQueue() {
+  const progress = getUsageSyncProgress();
   let status = usageSyncQueue.status;
-  if (status !== "running" && isCoolingDown() && getUsageSyncProgress().pending > 0) {
+
+  if (!usageSyncQueue.running && progress.pending === 0 && progress.total > 0) {
+    status = "completed";
+  }
+
+  if (status !== "running" && isCoolingDown() && progress.pending > 0) {
     status = "cooldown";
   }
 
   return {
     status,
-    progress: getUsageSyncProgress(),
+    progress,
     cooldownUntil:
       status === "cooldown" || status === "running" ? getCooldownUntilIso() : usageSyncQueue.cooldownUntil,
     currentUsername: usageSyncQueue.currentUsername,
@@ -1046,10 +1461,48 @@ function serializeUsageSyncQueue() {
   };
 }
 
+function serializeAutoCheckinState() {
+  const config = getAutoCheckinConfig();
+  const store = autoCheckinScheduler.store;
+  const now = new Date();
+  const todayKey = getDayKeyForDate(now, config.timezone);
+  const lastAttemptAt = store.lastAttemptAt ? new Date(store.lastAttemptAt) : null;
+  const lastErrorMessage =
+    lastAttemptAt && isSameZonedDay(lastAttemptAt, now, config.timezone)
+      ? store.lastErrorMessage
+      : null;
+
+  let status = "disabled";
+  if (config.enabled) {
+    status = "scheduled";
+    if (store.lastTriggeredDay === todayKey) {
+      if (checkinQueue.status === "cooldown") status = "cooldown";
+      else if (checkinQueue.running || checkinQueue.status === "running") status = "running";
+      else status = "triggered";
+    } else if (lastErrorMessage) {
+      status = "retrying";
+    }
+  }
+
+  return {
+    enabled: config.enabled,
+    time: config.time,
+    timezone: config.timezone,
+    catchUpEnabled: config.catchUpEnabled,
+    nextRunAt: getNextAutoCheckinRunAt(config, store, now),
+    lastTriggeredAt: store.lastTriggeredAt,
+    lastTriggeredDay: store.lastTriggeredDay,
+    lastAttemptAt: store.lastAttemptAt,
+    lastErrorMessage,
+    status
+  };
+}
+
 function buildSyncState() {
   return {
     checkinQueue: serializeCheckinQueue(),
-    usageSync: serializeUsageSyncQueue()
+    usageSync: serializeUsageSyncQueue(),
+    autoCheckin: serializeAutoCheckinState()
   };
 }
 
@@ -1079,6 +1532,10 @@ function buildQueueItems(scope = "all") {
         reward: state.checkin.reward
       };
     });
+}
+
+function hasPendingCheckinItems(items = checkinQueue.items) {
+  return items.some((item) => item.status === "pending");
 }
 
 function clearCheckinResumeTimer() {
@@ -1131,7 +1588,7 @@ function ensureCheckinQueue(scope = "all") {
     return serializeCheckinQueue();
   }
 
-  const hasPendingItems = checkinQueue.items.some((item) => item.status === "pending");
+  const hasPendingItems = hasPendingCheckinItems();
   if (hasPendingItems && checkinQueue.scope === scope) {
     checkinQueue.status = isCoolingDown() ? "cooldown" : "running";
     checkinQueue.cooldownUntil = isCoolingDown() ? getCooldownUntilIso() : null;
@@ -1149,19 +1606,29 @@ function ensureCheckinQueue(scope = "all") {
   }
 
   const nextItems = buildQueueItems(scope);
+  const hasPendingItemsInNextQueue = hasPendingCheckinItems(nextItems);
   checkinQueue.scope = scope;
   checkinQueue.items = nextItems;
   checkinQueue.currentUsername = null;
-  checkinQueue.status = nextItems.length ? "running" : "completed";
+  checkinQueue.status = hasPendingItemsInNextQueue
+    ? isCoolingDown()
+      ? "cooldown"
+      : "running"
+    : "completed";
   checkinQueue.delayMs = CHECKIN_INITIAL_DELAY;
-  checkinQueue.autoResume = true;
-  checkinQueue.cooldownUntil = isCoolingDown() ? getCooldownUntilIso() : null;
+  checkinQueue.autoResume = hasPendingItemsInNextQueue;
+  checkinQueue.cooldownUntil =
+    hasPendingItemsInNextQueue && isCoolingDown() ? getCooldownUntilIso() : null;
   updateCheckinQueueProgressMessage();
 
-  if (nextItems.length) {
-    queueMicrotask(() => {
-      void runCheckinQueue();
-    });
+  if (hasPendingItemsInNextQueue) {
+    if (isCoolingDown()) {
+      scheduleCheckinResumeAfterCooldown();
+    } else {
+      queueMicrotask(() => {
+        void runCheckinQueue();
+      });
+    }
   }
 
   return serializeCheckinQueue();
@@ -1218,6 +1685,15 @@ function kickUsageSync({ priorityUsernames = [], selectedUsername = null } = {})
   }
 
   if (usageSyncQueue.running) {
+    return serializeUsageSyncQueue();
+  }
+
+  if (getUsagePendingCount() === 0) {
+    usageSyncQueue.status = "completed";
+    usageSyncQueue.currentUsername = null;
+    usageSyncQueue.message = "当日用量已同步";
+    usageSyncQueue.cooldownUntil = null;
+    usageSyncQueue.updatedAt = nowIso();
     return serializeUsageSyncQueue();
   }
 
@@ -1480,6 +1956,13 @@ async function runUsageSyncQueue() {
           return;
         }
 
+        if (error?.code === "AUTH_FAILED") {
+          registerAuthFailedAlert(username);
+        }
+        if (isTimeoutError(error)) {
+          registerSyncTimeoutAlert(username);
+        }
+
         usageSyncQueue.failedUsernames.add(username);
         updateAccountState(account, (state) => {
           state.usage.dayKey = currentDayKey();
@@ -1512,6 +1995,7 @@ async function runUsageSyncQueue() {
     if (pendingCount === 0) {
       usageSyncQueue.status = "completed";
       usageSyncQueue.message = "当日用量已同步";
+      usageSyncQueue.cooldownUntil = null;
     } else if (!isCoolingDown() && !checkinQueue.running) {
       usageSyncQueue.status = "paused";
       usageSyncQueue.message = "当日用量待继续同步";
@@ -1550,14 +2034,12 @@ function buildSummary(accounts) {
 }
 
 function buildTrend(accounts) {
-  const today = new Date();
+  const timeZone = getAppTimeZone();
+  const todayParts = getZonedDateParts(new Date(), timeZone);
   return Array.from({ length: 7 }).map((_, index) => {
-    const date = new Date(today);
-    date.setDate(today.getDate() - (6 - index));
-    const label = `${date.getMonth() + 1}/${date.getDate()}`;
-    const dayKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-      date.getDate()
-    ).padStart(2, "0")}`;
+    const dateParts = getOffsetDayParts(todayParts, index - 6, timeZone);
+    const label = `${dateParts.month}/${dateParts.day}`;
+    const dayKey = formatDayKey(dateParts);
     const checkinIncome = getAccounts().reduce((sum, account) => {
       const state = getAccountState(account);
       const records = Array.isArray(state.raw.checkinRecords) ? state.raw.checkinRecords : [];
@@ -1585,6 +2067,7 @@ function buildDashboardPayload() {
   return {
     summary: buildSummary(accounts),
     accounts,
+    alerts: buildDashboardAlerts(),
     trend: buildTrend(accounts),
     refreshedAt: nowIso(),
     currencySymbol: siteRates.currencySymbol,
@@ -1592,6 +2075,60 @@ function buildDashboardPayload() {
     accountFile: getAccountFilePath(),
     sync: buildSyncState()
   };
+}
+
+function refreshDashboardSnapshot(expiresAt = Date.now() + getDashboardCacheTtl()) {
+  const payload = buildDashboardPayload();
+  dashboardCache = {
+    data: payload,
+    expiresAt
+  };
+  return payload;
+}
+
+function buildDashboardAlerts() {
+  const alerts = [];
+  const rateLimitStreak = dashboardAlertsState.rateLimit.streak;
+  const authFailedUsernames = Array.from(dashboardAlertsState.authFailed.usernames).sort();
+  const syncTimeoutUsernames = Array.from(dashboardAlertsState.syncTimeout.usernames).sort();
+
+  if (rateLimitStreak >= 2) {
+    alerts.push({
+      type: "rate_limit",
+      severity: "warning",
+      title: "连续 429 告警",
+      message: `站点已连续 ${rateLimitStreak} 次返回 429，签到与同步队列会进入冷却并自动续跑。`,
+      count: rateLimitStreak,
+      usernames: [],
+      updatedAt: dashboardAlertsState.rateLimit.updatedAt
+    });
+  }
+
+  if (authFailedUsernames.length) {
+    alerts.push({
+      type: "auth_failed",
+      severity: "destructive",
+      title: "登录失效告警",
+      message: `${authFailedUsernames.length} 个账号登录态失效，请检查账号密码或重新同步。`,
+      count: authFailedUsernames.length,
+      usernames: authFailedUsernames,
+      updatedAt: dashboardAlertsState.authFailed.updatedAt
+    });
+  }
+
+  if (syncTimeoutUsernames.length) {
+    alerts.push({
+      type: "sync_timeout",
+      severity: "warning",
+      title: "同步超时告警",
+      message: `${syncTimeoutUsernames.length} 个账号在用量同步时超时，建议稍后刷新重试。`,
+      count: syncTimeoutUsernames.length,
+      usernames: syncTimeoutUsernames,
+      updatedAt: dashboardAlertsState.syncTimeout.updatedAt
+    });
+  }
+
+  return alerts;
 }
 
 function collectDashboardErrors(accounts) {
@@ -1604,6 +2141,95 @@ function collectDashboardErrors(accounts) {
     errors.unshift(cooldownMessage());
   }
   return errors;
+}
+
+function canAutoCheckinRunNow(config, store, now = new Date()) {
+  if (!config.enabled) return false;
+
+  const parts = getZonedDateParts(now, config.timezone);
+  const currentClock = formatClock(parts);
+  const dueNow = config.catchUpEnabled
+    ? currentClock >= config.time
+    : currentClock === config.time;
+
+  if (!dueNow) return false;
+  if (store.lastTriggeredDay === formatDayKey(parts)) return false;
+
+  const lastAttemptAt = store.lastAttemptAt ? new Date(store.lastAttemptAt) : null;
+  if (
+    store.lastErrorMessage &&
+    lastAttemptAt &&
+    isSameZonedDay(lastAttemptAt, now, config.timezone) &&
+    now.getTime() - lastAttemptAt.getTime() < config.retryMinutes * 60 * 1000
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+async function runAutoCheckinTick() {
+  if (autoCheckinScheduler.running) return;
+  autoCheckinScheduler.running = true;
+
+  try {
+    const config = getAutoCheckinConfig();
+    const store = autoCheckinScheduler.store;
+    const now = new Date();
+
+    if (!canAutoCheckinRunNow(config, store, now)) {
+      return;
+    }
+
+    const triggeredAt = now.toISOString();
+    const todayKey = getDayKeyForDate(now, config.timezone);
+
+    try {
+      const result = await startOrResumeCheckinQueue("all");
+      const queue = result.sync.checkinQueue;
+      const accepted = queue.scope === "all" && queue.progress.total > 0;
+
+      if (!accepted) {
+        updateAutoCheckinStore({
+          lastAttemptAt: triggeredAt,
+          lastErrorMessage: result.message || "自动签到未能启动"
+        });
+        return;
+      }
+
+      updateAutoCheckinStore({
+        lastTriggeredDay: todayKey,
+        lastTriggeredAt: triggeredAt,
+        lastAttemptAt: triggeredAt,
+        lastErrorMessage: null
+      });
+    } catch (error) {
+      updateAutoCheckinStore({
+        lastAttemptAt: triggeredAt,
+        lastErrorMessage: error?.message || "自动签到触发失败"
+      });
+    }
+  } finally {
+    autoCheckinScheduler.running = false;
+  }
+}
+
+export function startAutoCheckinScheduler() {
+  autoCheckinScheduler.store = readAutoCheckinStore();
+  if (autoCheckinScheduler.timer) return;
+
+  autoCheckinScheduler.timer = setInterval(() => {
+    void runAutoCheckinTick();
+  }, AUTO_CHECKIN_HEARTBEAT_MS);
+
+  void runAutoCheckinTick();
+}
+
+export function stopAutoCheckinScheduler() {
+  if (autoCheckinScheduler.timer) {
+    clearInterval(autoCheckinScheduler.timer);
+    autoCheckinScheduler.timer = null;
+  }
 }
 
 function scheduleBackgroundWork({ force = false, selectedUsername = null } = {}) {
@@ -1631,25 +2257,20 @@ export async function getDashboard({ force = false, selectedUsername = null } = 
     if (selectedUsername) {
       kickUsageSync({ selectedUsername });
     }
-    return dashboardCache.data;
+    return refreshDashboardSnapshot(dashboardCache.expiresAt);
   }
 
   if (dashboardInFlight) {
     if (selectedUsername) {
       kickUsageSync({ selectedUsername });
     }
-    return dashboardInFlight;
+    return dashboardInFlight.then(() => refreshDashboardSnapshot());
   }
 
   dashboardInFlight = Promise.resolve()
     .then(() => {
       scheduleBackgroundWork({ force, selectedUsername });
-      const payload = buildDashboardPayload();
-      dashboardCache = {
-        data: payload,
-        expiresAt: Date.now() + getDashboardCacheTtl()
-      };
-      return payload;
+      return refreshDashboardSnapshot();
     })
     .finally(() => {
       dashboardInFlight = null;
@@ -1694,9 +2315,28 @@ export async function startOrResumeCheckinQueue(scope = "all") {
   await fetchSiteStatus();
   const queue = ensureCheckinQueue(scope);
   clearDashboardCache();
+
+  let message = scope === "failed" ? "失败账号重试已启动" : "一键签到已启动";
+  if (scope === "failed") {
+    if (!queue.progress.total) {
+      message = "没有可重试的失败账号";
+    } else if (!queue.progress.pending && !queue.progress.failed) {
+      message = "失败账号已处理完成";
+    } else if (queue.status === "cooldown") {
+      message = "失败账号重试已加入队列，冷却结束后会自动继续";
+    }
+  } else if (!queue.progress.total) {
+    message = "未读取到可签到账号";
+  } else if (!queue.progress.pending && queue.progress.skipped === queue.progress.total) {
+    message = "全部账号今日已签到";
+  } else if (queue.status === "cooldown") {
+    message = "一键签到已加入队列，冷却结束后会自动继续";
+  }
+
   return {
-    started: queue.status === "running" || queue.status === "cooldown",
+    started: queue.progress.pending > 0,
     scope,
+    message,
     sync: buildSyncState()
   };
 }

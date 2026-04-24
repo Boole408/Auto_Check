@@ -28,48 +28,48 @@
 }
 
 :root {
-  --background: 76 41% 93%;
-  --foreground: 150 32% 12%;
-  --card: 48 64% 96%;
-  --card-foreground: 150 32% 12%;
-  --popover: 48 64% 96%;
-  --popover-foreground: 150 32% 12%;
-  --primary: 151 55% 24%;
-  --primary-foreground: 50 60% 96%;
-  --secondary: 41 68% 84%;
-  --secondary-foreground: 151 50% 18%;
-  --muted: 72 30% 86%;
-  --muted-foreground: 143 12% 41%;
-  --accent: 26 72% 58%;
-  --accent-foreground: 46 80% 96%;
+  --background: 156 30% 98%;
+  --foreground: 164 44% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 164 44% 11%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 164 44% 11%;
+  --primary: 162 59% 49%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 150 24% 96%;
+  --secondary-foreground: 164 22% 24%;
+  --muted: 150 25% 96%;
+  --muted-foreground: 159 9% 48%;
+  --accent: 156 77% 96%;
+  --accent-foreground: 165 88% 25%;
   --destructive: 2 72% 53%;
   --destructive-foreground: 50 60% 96%;
-  --border: 88 25% 76%;
-  --input: 88 25% 76%;
-  --ring: 151 55% 24%;
+  --border: 155 20% 89%;
+  --input: 155 20% 89%;
+  --ring: 162 59% 49%;
   --radius: 1rem;
 }
 
 .dark {
-  --background: 152 30% 8%;
-  --foreground: 52 44% 91%;
-  --card: 152 26% 11%;
-  --card-foreground: 52 44% 91%;
-  --popover: 152 26% 11%;
-  --popover-foreground: 52 44% 91%;
-  --primary: 83 47% 70%;
-  --primary-foreground: 151 44% 12%;
-  --secondary: 154 25% 19%;
-  --secondary-foreground: 52 44% 91%;
-  --muted: 154 18% 18%;
-  --muted-foreground: 72 14% 68%;
-  --accent: 27 75% 61%;
-  --accent-foreground: 42 55% 95%;
-  --destructive: 3 68% 58%;
-  --destructive-foreground: 42 55% 95%;
-  --border: 154 18% 24%;
-  --input: 154 18% 24%;
-  --ring: 83 47% 70%;
+  --background: 160 24% 10%;
+  --foreground: 156 28% 92%;
+  --card: 160 20% 13%;
+  --card-foreground: 156 28% 92%;
+  --popover: 160 20% 13%;
+  --popover-foreground: 156 28% 92%;
+  --primary: 162 59% 49%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 160 18% 17%;
+  --secondary-foreground: 156 20% 86%;
+  --muted: 160 16% 15%;
+  --muted-foreground: 156 12% 66%;
+  --accent: 160 18% 18%;
+  --accent-foreground: 156 28% 92%;
+  --destructive: 2 72% 53%;
+  --destructive-foreground: 50 60% 96%;
+  --border: 160 15% 24%;
+  --input: 160 15% 24%;
+  --ring: 162 59% 49%;
 }
 
 * {
@@ -80,14 +80,12 @@ html {
   color-scheme: light;
 }
 
-html.dark {
-  color-scheme: dark;
-}
-
 body {
   min-height: 100vh;
   margin: 0;
-  background: hsl(var(--background));
+  background:
+    radial-gradient(circle at 20% 0%, rgba(52, 199, 154, 0.1), transparent 28%),
+    linear-gradient(180deg, #f8fcfa 0%, #f3f8f5 100%);
   color: hsl(var(--foreground));
   font-family:
     "MiSans",
@@ -96,6 +94,113 @@ body {
     "PingFang SC",
     "Microsoft YaHei",
     sans-serif;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+html.dark body {
+  background:
+    radial-gradient(circle at 20% 0%, rgba(52, 199, 154, 0.12), transparent 26%),
+    radial-gradient(circle at 82% 8%, rgba(52, 199, 154, 0.08), transparent 22%),
+    linear-gradient(180deg, #0d1714 0%, #111d19 100%);
+}
+
+.dashboard-scroll {
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(52, 199, 154, 0.36) rgba(231, 240, 236, 0.88);
+}
+
+html.dark .dashboard-scroll {
+  scrollbar-color: rgba(52, 199, 154, 0.52) rgba(24, 39, 34, 0.9);
+}
+
+.dashboard-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.dashboard-scroll::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(231, 240, 236, 0.88);
+}
+
+html.dark .dashboard-scroll::-webkit-scrollbar-track {
+  background: rgba(24, 39, 34, 0.9);
+}
+
+.dashboard-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(52, 199, 154, 0.72), rgba(123, 227, 194, 0.86));
+  background-clip: padding-box;
+}
+
+html.dark .dashboard-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(52, 199, 154, 0.82), rgba(123, 227, 194, 0.78));
+  background-clip: padding-box;
+}
+
+.dashboard-scroll::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(34, 184, 137, 0.82), rgba(123, 227, 194, 0.92));
+  background-clip: padding-box;
+}
+
+html.dark .dashboard-scroll::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(34, 184, 137, 0.92), rgba(123, 227, 194, 0.88));
+  background-clip: padding-box;
+}
+
+.custom-scrollbar {
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(52, 199, 154, 0.28) rgba(231, 240, 236, 0.72);
+}
+
+html.dark .custom-scrollbar {
+  scrollbar-color: rgba(52, 199, 154, 0.42) rgba(24, 39, 34, 0.74);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(231, 240, 236, 0.72);
+}
+
+html.dark .custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(24, 39, 34, 0.74);
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(52, 199, 154, 0.56), rgba(123, 227, 194, 0.7));
+  background-clip: padding-box;
+}
+
+html.dark .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(52, 199, 154, 0.68), rgba(123, 227, 194, 0.72));
+  background-clip: padding-box;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(34, 184, 137, 0.68), rgba(123, 227, 194, 0.8));
+  background-clip: padding-box;
+}
+
+html.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(34, 184, 137, 0.8), rgba(123, 227, 194, 0.82));
+  background-clip: padding-box;
+}
+
+#root {
+  min-height: 100vh;
 }
 
 button,

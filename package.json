@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n api,web -c cyan,green \"node server/index.js\" \"vite --host 0.0.0.0 --port 5173\"",
+    "dev": "node scripts/start-dev.js",
+    "start:oneclick": "node scripts/start-dev.js",
     "server": "node server/index.js",
-    "client": "vite --host 0.0.0.0 --port 5173",
+    "client": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 5173"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@radix-ui/react-select": "^2.2.6",

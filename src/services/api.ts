@@ -3,6 +3,7 @@ import type {
   CheckinAllResult,
   CheckinResult,
   CheckinScope,
+  ImportAccountsResult,
   QuotaDashboard
 } from "@/types";
 
@@ -76,5 +77,15 @@ export function checkinAll(scope: CheckinScope = "all") {
   return request<CheckinAllResult>("/api/quota-monitor/checkin-all", {
     method: "POST",
     body: JSON.stringify({ scope })
+  });
+}
+
+export function importAccounts(payload: {
+  content: string;
+  format?: "txt" | "json" | "auto";
+}) {
+  return request<ImportAccountsResult>("/api/quota-monitor/accounts/import", {
+    method: "POST",
+    body: JSON.stringify(payload)
   });
 }
