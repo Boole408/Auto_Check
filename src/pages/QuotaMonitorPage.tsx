@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
-import { motion } from "framer-motion";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Bar,
   BarChart,
@@ -25,9 +25,10 @@ import {
   ShieldAlert,
   Sun,
   WalletCards,
-  X,
   Zap
 } from "lucide-react";
+import { AccountImportModal } from "@/components/AccountImportModal";
+import { CountdownTimer } from "@/components/CountdownTimer";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,18 +40,34 @@ import {
   SelectTrigger,
   SelectValue
 } from "@/components/ui/select";
-import { ApiError, checkinAccount, checkinAll, getQuotaMonitor, importAccounts } from "@/services/api";
+import {
+  describeAutoCheckin,
+  formatCompactTime,
+  formatTime,
+  getAccountInitial,
+  getAccountQueueHint,
+  getAutoCheckinLabel,
+  getCheckinActionLabel,
+  getCheckinSourceText,
+  getCheckinStatusText,
+  getSingleActionLabel,
+  getTodayUsedStatusText,
+  getTodayUsedText,
+  getUsageSourceText,
+  matchesFilter,
+  money,
+  normalizeUsageQueue,
+  percent,
+  usageTone
+} from "@/lib/formatters";
+import { ApiError, checkinAccount, checkinAll, getQuotaMonitor } from "@/services/api";
 import type {
   AccountQuota,
-  AutoCheckinState,
   DashboardAlert,
-  CheckinQueueState,
   CheckinScope,
+  ImportAccountsResult,
   QuotaDashboard,
-  AutoCheckinStatus,
-  QueueLifecycleStatus,
   TodayUsedStatus,
-  UsageSyncState
 } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -65,6 +82,10 @@ const FILTERS = [
 
 type AccountFilter = (typeof FILTERS)[number]["key"];
 type AnalysisTab = "comparison" | "checkinTrend" | "usageTrend";
+type RefreshToast = {
+  tone: "success" | "error";
+  message: string;
+} | null;
 
 const PRIMARY_FILTERS = FILTERS.filter((item) => item.key !== "checked");
 const EXTRA_FILTERS = FILTERS.filter((item) => item.key === "checked");
@@ -107,172 +128,8 @@ const itemVariants = {
   show: { opacity: 1, y: 0, transition: { duration: 0.3 } }
 };
 
-const ACCOUNT_IMPORT_PLACEHOLDER = `支持 txt:
-username,password
-账号：your_username，密码：your_password
-
-支持 json:
-[
-  { "username": "user1", "password": "pass1" },
-  { "username": "user2", "password": "pass2" }
-]`;
-
 const ACCOUNT_TABLE_GRID =
-  "xl:grid-cols-[minmax(0,2.35fr)_0.9fr_0.88fr_0.92fr_0.96fr_0.96fr_0.82fr_84px_118px]";
-
-function money(value: number | null | undefined, symbol = "楼") {
-  if (value == null) return "待同步";
-  return `${symbol}${Number(value).toLocaleString("zh-CN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  })}`;
-}
-
-function percent(value: number | null | undefined) {
-  return `${Number(value || 0).toFixed(1)}%`;
-}
-
-function formatTime(value?: string | null) {
-  if (!value) return "未同步";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-  }).format(new Date(value));
-}
-
-function formatCompactTime(value?: string | null) {
-  if (!value) return "未安排";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(value));
-}
-
-function formatCountdown(value?: string | null, now = Date.now()) {
-  if (!value) return null;
-  const diff = new Date(value).getTime() - now;
-  if (diff <= 0) return "00:00";
-  const totalSeconds = Math.ceil(diff / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
-function usageTone(value: number) {
-  if (value > 100) {
-    return {
-      bar: "bg-red-500",
-      text: "text-red-600 dark:text-red-300",
-      badge: "destructive" as const
-    };
-  }
-  if (value >= 80) {
-    return {
-      bar: "bg-amber-500",
-      text: "text-amber-600 dark:text-amber-300",
-      badge: "warning" as const
-    };
-  }
-  return {
-    bar: "bg-[linear-gradient(90deg,#34C79A,#7BE3C2)]",
-    text: "text-[#08785C]",
-    badge: "success" as const
-  };
-}
-
-function getQueueVariant(status?: QueueLifecycleStatus) {
-  if (status === "cooldown") return "warning" as const;
-  if (status === "running") return "default" as const;
-  if (status === "completed") return "success" as const;
-  if (status === "paused") return "outline" as const;
-  return "secondary" as const;
-}
-
-function getQueueLabel(status?: QueueLifecycleStatus) {
-  switch (status) {
-    case "running":
-      return "进行中";
-    case "cooldown":
-      return "冷却中";
-    case "completed":
-      return "已完成";
-    case "paused":
-      return "已暂停";
-    default:
-      return "空闲";
-  }
-}
-
-function getAutoCheckinVariant(status?: AutoCheckinStatus) {
-  switch (status) {
-    case "running":
-      return "default" as const;
-    case "cooldown":
-    case "retrying":
-      return "warning" as const;
-    case "triggered":
-      return "success" as const;
-    case "disabled":
-      return "outline" as const;
-    default:
-      return "secondary" as const;
-  }
-}
-
-function getAutoCheckinLabel(status?: AutoCheckinStatus) {
-  switch (status) {
-    case "running":
-      return "执行中";
-    case "cooldown":
-      return "冷却中";
-    case "retrying":
-      return "重试中";
-    case "triggered":
-      return "已触发";
-    case "disabled":
-      return "已关闭";
-    default:
-      return "待执行";
-  }
-}
-
-function describeAutoCheckin(autoCheckin: AutoCheckinState | undefined) {
-  if (!autoCheckin) return "自动签到状态读取中";
-
-  switch (autoCheckin.status) {
-    case "disabled":
-      return "当前未启用每日自动签到。";
-    case "running":
-      return "今日自动任务已触发，签到队列正在执行。";
-    case "cooldown":
-      return "自动任务已触发，但当前处于限流冷却中。";
-    case "retrying":
-      return autoCheckin.lastErrorMessage || "上次自动触发失败，系统会按退避策略继续重试。";
-    case "triggered":
-      return "今天的自动签到已经触发完成。";
-    default:
-      return `每日会按 ${autoCheckin.time} 自动触发签到队列。`;
-  }
-}
-
-function normalizeUsageQueue(queue: UsageSyncState | undefined) {
-  if (!queue) return queue;
-  if (queue.status === "completed") return queue;
-  if (queue.progress.total > 0 && queue.progress.pending === 0 && !queue.currentUsername) {
-    return {
-      ...queue,
-      status: "completed" as const,
-      cooldownUntil: null,
-      message: "当日用量已同步"
-    };
-  }
-  return queue;
-}
+  "xl:grid-cols-[minmax(0,2.35fr)_0.92fr_0.9fr_0.96fr_1.02fr_1.04fr_0.9fr_96px_132px]";
 
 function getCheckinBadge(account: AccountQuota) {
   const className =
@@ -358,167 +215,6 @@ function getTodayUsedBadge(status: TodayUsedStatus) {
   }
 }
 
-function getTodayUsedText(account: AccountQuota) {
-  if (account.todayUsedStatus === "pending") return "待同步";
-  if (account.todayUsedStatus === "unavailable" && account.todayUsed == null) return "不可用";
-  return money(account.todayUsed, account.currencySymbol);
-}
-
-function getUsageSourceText(account: AccountQuota) {
-  switch (account.todayUsedStatus) {
-    case "exact":
-      return "日志统计精确值";
-    case "stale":
-      return "本地缓存值";
-    case "unavailable":
-      return "接口不可用";
-    default:
-      return "后台待同步";
-  }
-}
-
-function getCheckinSourceText(account: AccountQuota) {
-  return account.dataSource?.checkin === "remote" ? "远程确认" : "本地缓存";
-}
-
-function getCheckinActionLabel(queue: CheckinQueueState | undefined, pending = false) {
-  if (queue?.status === "cooldown") {
-    return "冷却中";
-  }
-  if (pending || queue?.status === "running") {
-    return "一键签到中...";
-  }
-  return "一键签到";
-}
-
-function getSingleActionLabel(account: AccountQuota, working: boolean, coolingDown: boolean) {
-  if (account.signedToday) return "今日已签到";
-  if (coolingDown) return "冷却中";
-  return working ? "签到中..." : "去签到";
-}
-
-function getCheckinStatusText(account: AccountQuota) {
-  if (account.signedToday) return "今日已签到";
-  if (account.checkinStatus === "failed") return "签到异常";
-  if (account.checkinStatus === "unknown") return "待确认";
-  return "未签到";
-}
-
-function getTodayUsedStatusText(status: TodayUsedStatus) {
-  switch (status) {
-    case "exact":
-      return "精确";
-    case "stale":
-      return "缓存";
-    case "unavailable":
-      return "不可用";
-    default:
-      return "待同步";
-  }
-}
-
-function getAccountInitial(account: AccountQuota) {
-  const source = account.displayName || account.username;
-  const value = source.trim().charAt(0);
-  return value ? value.toUpperCase() : "A";
-}
-
-function matchesFilter(account: AccountQuota, filter: AccountFilter) {
-  switch (filter) {
-    case "checked":
-      return account.signedToday;
-    case "pending":
-      return (
-        account.todayUsedStatus === "pending" ||
-        account.checkinStatus === "unknown" ||
-        account.todayUsedStatus === "stale"
-      );
-    case "error":
-      return account.checkinStatus === "failed" || account.todayUsedStatus === "unavailable";
-    case "unchecked":
-      return !account.signedToday;
-    default:
-      return true;
-  }
-}
-
-function getAccountQueueHint(
-  account: AccountQuota,
-  checkinQueue: CheckinQueueState | undefined,
-  usageQueue: UsageSyncState | undefined
-) {
-  if (checkinQueue?.currentUsername === account.username) return "当前正在签到";
-  if (usageQueue?.currentUsername === account.username) return "当前正在同步当日用量";
-  if (checkinQueue?.status === "cooldown") return "签到队列冷却中";
-  if (checkinQueue?.status === "running" && !account.signedToday) return "等待签到队列处理";
-  if (usageQueue?.status === "running" && account.todayUsedStatus !== "exact") return "等待同步当日用量";
-  return "当前无排队任务";
-}
-
-function describeCheckinQueue(queue: CheckinQueueState | undefined, countdown: string | null) {
-  if (!queue) return "等待开始";
-  const handled = queue.progress.completed + queue.progress.failed + queue.progress.skipped;
-
-  switch (queue.status) {
-    case "running":
-      return `签到进行中，已处理 ${handled}/${queue.progress.total}`;
-    case "cooldown":
-      return countdown ? `触发限流冷却，${countdown} 后自动继续` : "触发限流冷却";
-    case "completed":
-      return `签到完成，成功 ${queue.progress.completed}，跳过 ${queue.progress.skipped}，失败 ${queue.progress.failed}`;
-    case "paused":
-      return "签到队列已暂停，可继续执行";
-    default:
-      return "等待开始";
-  }
-}
-
-function describeUsageQueue(queue: UsageSyncState | undefined, countdown: string | null) {
-  if (!queue) return "等待同步";
-
-  switch (queue.status) {
-    case "running":
-      return `后台同步中，已完成 ${queue.progress.completed}/${queue.progress.total}`;
-    case "cooldown":
-      return countdown ? `统计同步冷却中，${countdown} 后自动恢复` : "统计同步冷却中";
-    case "completed":
-      return "当日用量同步完成";
-    case "paused":
-      return "统计同步已暂停，等待下轮继续";
-    default:
-      return "等待同步";
-  }
-}
-
-function QueueStatCard({
-  label,
-  value,
-  hint,
-  tone = "default"
-}: {
-  label: string;
-  value: string | number;
-  hint?: string;
-  tone?: "default" | "primary" | "accent" | "danger";
-}) {
-  return (
-    <div className="rounded-[1.2rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.82)] px-4 py-3 shadow-[0_10px_24px_rgba(16,42,36,0.04),inset_0_1px_0_rgba(255,255,255,0.48)] dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)] dark:shadow-[0_12px_20px_rgba(0,0,0,0.2)]">
-      <p className="text-[11px] font-medium tracking-[0.14em] text-muted-foreground">{label}</p>
-      <p
-        className={cn(
-          "mt-2 text-[1.7rem] font-black leading-none tracking-tight",
-          tone === "primary" && "text-primary",
-          tone === "accent" && "text-accent",
-          tone === "danger" && "text-red-600 dark:text-red-300"
-        )}
-      >
-        {value}
-      </p>
-      {hint ? <p className="mt-2 text-xs text-muted-foreground">{hint}</p> : null}
-    </div>
-  );
-}
-
 function QueueMetaCell({
   label,
   value,
@@ -541,12 +237,6 @@ function QueueMetaCell({
       <div className={cn("mt-1.5 text-sm font-semibold text-foreground/90", valueClassName)}>{value}</div>
     </div>
   );
-}
-
-function summarizeAlertAccounts(usernames: string[]) {
-  if (!usernames.length) return "全站接口";
-  const preview = usernames.slice(0, 3).join("、");
-  return usernames.length > 3 ? `${preview} 等 ${usernames.length} 个账号` : preview;
 }
 
 function getAlertPresentation(alert: DashboardAlert) {
@@ -579,33 +269,31 @@ function getAlertPresentation(alert: DashboardAlert) {
 }
 
 export default function QuotaMonitorPage() {
+  const MANUAL_REFRESH_MIN_SPIN_MS = 850;
   const [dashboard, setDashboard] = useState<QuotaDashboard | null>(null);
   const [selectedUsername, setSelectedUsername] = useState("");
   const [filter, setFilter] = useState<AccountFilter>("all");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [workingAccount, setWorkingAccount] = useState<string | null>(null);
   const [workingScope, setWorkingScope] = useState<CheckinScope | null>(null);
   const [notice, setNotice] = useState("");
+  const [refreshToast, setRefreshToast] = useState<RefreshToast>(null);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("cw-theme") === "dark");
-  const [now, setNow] = useState(Date.now());
-  const [accountImportDraft, setAccountImportDraft] = useState("");
-  const [accountImportFileName, setAccountImportFileName] = useState("");
-  const [importingAccounts, setImportingAccounts] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [analysisTab, setAnalysisTab] = useState<AnalysisTab>("comparison");
   const [autoCheckinExpanded, setAutoCheckinExpanded] = useState(false);
   const [detailExpanded, setDetailExpanded] = useState(false);
   const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
   const selectedRef = useRef("");
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   async function loadDashboard(options: {
     silent?: boolean;
     force?: boolean;
     selected?: string | null;
     signal?: AbortSignal;
-  } = {}) {
+  } = {}): Promise<boolean> {
     const { silent = false, force = false, selected = selectedRef.current || null, signal } = options;
 
     try {
@@ -628,12 +316,18 @@ export default function QuotaMonitorPage() {
         }
         return data.accounts[0]?.username ?? "";
       });
+      return true;
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return false;
+      }
+
       const message =
         error instanceof ApiError
           ? error.message
           : "网络异常，请检查服务是否正常启动";
       setNotice(message);
+      return false;
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -679,27 +373,14 @@ export default function QuotaMonitorPage() {
   }, [darkMode]);
 
   useEffect(() => {
-    document.body.classList.toggle("overflow-hidden", importModalOpen);
-    return () => document.body.classList.remove("overflow-hidden");
-  }, [importModalOpen]);
+    if (!refreshToast) return;
 
-  useEffect(() => {
-    if (!importModalOpen) return;
+    const timer = window.setTimeout(() => {
+      setRefreshToast(null);
+    }, 2200);
 
-    const handleKeydown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setImportModalOpen(false);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeydown);
-    return () => window.removeEventListener("keydown", handleKeydown);
-  }, [importModalOpen]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
+    return () => window.clearTimeout(timer);
+  }, [refreshToast]);
 
   const selectedAccount = useMemo(() => {
     if (!dashboard?.accounts.length) return null;
@@ -722,48 +403,25 @@ export default function QuotaMonitorPage() {
     [dashboard?.sync.usageSync]
   );
   const autoCheckin = dashboard?.sync.autoCheckin;
-  const cooldownCountdown = formatCountdown(checkinQueue?.cooldownUntil, now);
-  const usageCountdown = formatCountdown(usageQueue?.cooldownUntil, now);
   const failedAccountsCount = checkinQueue?.progress.failed ?? 0;
   const bulkCheckinBusy = workingScope === "all" || checkinQueue?.status === "running";
   const activeAlerts = dashboard?.alerts ?? [];
-  const usageBreakdown = useMemo(() => {
-    return (dashboard?.accounts ?? []).reduce(
-      (acc, account) => {
-        acc[account.todayUsedStatus] += 1;
-        return acc;
-      },
-      {
-        exact: 0,
-        stale: 0,
-        pending: 0,
-        unavailable: 0
-      }
-    );
-  }, [dashboard?.accounts]);
   const checkinCompleted = checkinQueue?.progress.completed ?? 0;
   const checkinSkipped = checkinQueue?.progress.skipped ?? 0;
   const checkinFailed = checkinQueue?.progress.failed ?? 0;
   const checkinTotal = checkinQueue?.progress.total ?? 0;
   const checkinHandled = checkinCompleted + checkinSkipped;
-  const checkinPending =
-    checkinQueue?.progress.pending ??
-    Math.max(checkinTotal - checkinCompleted - checkinSkipped - checkinFailed, 0);
-  const checkinProgressValue = checkinTotal ? (checkinHandled / checkinTotal) * 100 : 0;
-  const usageCompleted = usageQueue?.progress.completed ?? 0;
-  const usageTotal = usageQueue?.progress.total ?? 0;
-  const usageFailed = usageQueue?.progress.failed ?? 0;
   const usagePending =
     usageQueue?.progress.pending ??
     Math.max(
-      usageTotal - usageCompleted - (usageQueue?.progress.skipped ?? 0) - usageFailed,
+      (usageQueue?.progress.total ?? 0) -
+        (usageQueue?.progress.completed ?? 0) -
+        (usageQueue?.progress.skipped ?? 0) -
+        (usageQueue?.progress.failed ?? 0),
       0
     );
   const usageCoverageCompleted = dashboard?.summary.todayUsedCoverage.exactOrStaleAccounts ?? 0;
   const usageCoverageTotal = dashboard?.summary.todayUsedCoverage.totalAccounts ?? 0;
-  const usageCoverageRate = usageCoverageTotal
-    ? (usageCoverageCompleted / usageCoverageTotal) * 100
-    : 0;
 
   async function handleSingleCheckin(account: AccountQuota) {
     if (account.signedToday) return;
@@ -807,46 +465,50 @@ export default function QuotaMonitorPage() {
     }
   }
 
-  async function handleImportFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    if (!/\.(txt|json)$/i.test(file.name)) {
-      setNotice("仅支持导入 txt 或 json 文件");
-      event.target.value = "";
-      return;
-    }
-
-    const content = await file.text();
-    setAccountImportDraft(content);
-    setAccountImportFileName(file.name);
-    setNotice(`已载入 ${file.name}，确认后点击保存账号`);
-    event.target.value = "";
+  async function handleImportSuccess(result: ImportAccountsResult) {
+    setNotice(`已导入 ${result.count} 个账号`);
+    await loadDashboard({
+      silent: true,
+      force: true,
+      selected: selectedRef.current || null
+    });
   }
 
-  async function handleImportAccounts() {
-    if (!accountImportDraft.trim()) {
-      setNotice("请先粘贴账号内容或选择 txt/json 文件");
-      return;
-    }
+  async function handleRefresh() {
+    if (manualRefreshing || refreshing) return;
+
+    const startedAt = Date.now();
+    setManualRefreshing(true);
+    setRefreshToast(null);
 
     try {
-      setImportingAccounts(true);
-      const result = await importAccounts({
-        content: accountImportDraft,
-        format: "auto"
+      const ok = await loadDashboard({
+        silent: true,
+        force: true,
+        selected: selectedUsername || null
       });
-      setNotice(`已导入 ${result.count} 个账号`);
-      setAccountImportDraft("");
-      setAccountImportFileName("");
-      setImportModalOpen(false);
-      await loadDashboard({ silent: true, force: true, selected: selectedUsername || null });
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "账号导入失败，请检查内容格式";
-      setNotice(message);
+
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < MANUAL_REFRESH_MIN_SPIN_MS) {
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, MANUAL_REFRESH_MIN_SPIN_MS - elapsed)
+        );
+      }
+
+      if (ok) {
+        setNotice("数据刷新成功，面板已同步最新状态");
+        setRefreshToast({
+          tone: "success",
+          message: "刷新成功，页面已更新到最新数据。"
+        });
+      } else {
+        setRefreshToast({
+          tone: "error",
+          message: "刷新失败，请查看顶部提示后重试。"
+        });
+      }
     } finally {
-      setImportingAccounts(false);
+      setManualRefreshing(false);
     }
   }
 
@@ -886,6 +548,7 @@ export default function QuotaMonitorPage() {
   const overallTaskTotal = checkinDisplayTotal + usageDisplayTotal;
   const overallTaskCompleted = checkinHandled + usageCoverageCompleted;
   const overallProgress = overallTaskTotal ? (overallTaskCompleted / overallTaskTotal) * 100 : 0;
+  const isRefreshBusy = manualRefreshing || refreshing;
   const primaryOverviewCards = [
     {
       label: "签到完成",
@@ -907,14 +570,49 @@ export default function QuotaMonitorPage() {
     }
   ];
   const selectedUsageTone = usageTone(selectedAccount?.usagePercent ?? 0);
-  const condensedAlerts = [
+  const condensedAlerts: Array<{
+    key: string;
+    label: string;
+    value: ReactNode;
+    variant: "outline" | "warning" | "destructive";
+  }> = [
     ...(notice ? [{ key: "notice", label: "系统提示", value: notice, variant: "outline" as const }] : []),
     ...activeAlerts.slice(0, 3).map((alert) => ({
       key: alert.type,
       label: alert.title,
       value: alert.message,
       variant: getAlertPresentation(alert).badgeVariant
-    }))
+    })),
+    ...(checkinQueue?.status === "cooldown"
+      ? [
+          {
+            key: "checkin-cooldown",
+            label: "签到冷却",
+            value: (
+              <>
+                <CountdownTimer targetTime={checkinQueue.cooldownUntil} className="font-semibold" />
+                {" 后自动继续"}
+              </>
+            ),
+            variant: "warning" as const
+          }
+        ]
+      : []),
+    ...(usageQueue?.status === "cooldown"
+      ? [
+          {
+            key: "usage-cooldown",
+            label: "同步冷却",
+            value: (
+              <>
+                <CountdownTimer targetTime={usageQueue.cooldownUntil} className="font-semibold" />
+                {" 后自动恢复"}
+              </>
+            ),
+            variant: "warning" as const
+          }
+        ]
+      : [])
   ];
 
   const comparisonData =
@@ -1011,7 +709,9 @@ export default function QuotaMonitorPage() {
         background: "rgba(255,255,255,0.92)"
       };
   const chartUsedColor = "#34C79A";
-  const chartRemainingColor = darkMode ? "#31433D" : "#D7E5DF";
+  const chartRemainingColor = "#7BE3C2";
+  const chartTooltipTitleColor = darkMode ? "#E7F7F0" : "#102A24";
+  const chartTooltipValueColor = "#16A176";
 
   return (
     <main className="quota-monitor-page relative min-h-screen overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_20%_0%,rgba(52,199,154,0.08),transparent_26%),linear-gradient(180deg,#F8FCFA_0%,#F3F8F5_100%)] text-foreground dark:bg-[radial-gradient(circle_at_20%_0%,rgba(52,199,154,0.12),transparent_24%),linear-gradient(180deg,#0D1714_0%,#111D19_100%)]">
@@ -1021,7 +721,7 @@ export default function QuotaMonitorPage() {
         <div className="absolute bottom-[-8rem] left-1/4 h-64 w-64 rounded-full bg-[#DDF8EE]/10 blur-[120px] dark:bg-[#133027]/24" />
       </div>
 
-      <div className="relative mx-auto flex min-h-screen w-full max-w-[1680px] flex-col gap-3 px-4 py-4 sm:px-6">
+      <div className="relative flex min-h-screen w-full flex-col gap-3 px-4 py-4 sm:px-6">
         <motion.header
           initial={{ opacity: 0, y: -16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -1080,18 +780,17 @@ export default function QuotaMonitorPage() {
 
             <Button
               variant="outline"
-              className="h-9 border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] px-4 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]"
-              onClick={() =>
-                void loadDashboard({
-                  silent: true,
-                  force: true,
-                  selected: selectedUsername || null
-                })
-              }
-              disabled={refreshing}
+              className={cn(
+                "h-9 border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] px-4 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] transition-transform active:scale-[0.98] dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]",
+                isRefreshBusy &&
+                  "cursor-wait border-[#9EDCC6] bg-[rgba(232,249,242,0.9)] text-[#1D6C55] shadow-[0_0_0_3px_rgba(52,199,154,0.12)] dark:border-[#3C7E68] dark:bg-[rgba(24,44,37,0.96)]"
+              )}
+              onClick={() => void handleRefresh()}
+              disabled={isRefreshBusy}
+              aria-busy={isRefreshBusy}
             >
-              <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
-              刷新
+              <RefreshCw className={cn("h-4 w-4", isRefreshBusy && "animate-spin")} />
+              {isRefreshBusy ? "刷新中..." : "刷新"}
             </Button>
 
             <Button
@@ -1347,14 +1046,14 @@ export default function QuotaMonitorPage() {
                           )}
                         >
                           <span>账号</span>
-                          <span>签到</span>
-                          <span>用量</span>
-                          <span>今日已用</span>
-                          <span>总额度</span>
-                          <span>剩余额度</span>
-                          <span>使用率</span>
-                          <span>查看</span>
-                          <span>操作</span>
+                          <span className="text-center">签到</span>
+                          <span className="text-center">用量</span>
+                          <span className="text-center">今日已用</span>
+                          <span className="text-center">总额度</span>
+                          <span className="text-center">剩余额度</span>
+                          <span className="text-center">使用率</span>
+                          <span className="text-center">查看</span>
+                          <span className="text-center">操作</span>
                         </div>
 
                         {filteredAccounts.map((account) => {
@@ -1472,18 +1171,18 @@ export default function QuotaMonitorPage() {
                                     </p>
                                   </div>
                                 </button>
-                                <div>{getCheckinBadge(account)}</div>
-                                <div>{getTodayUsedBadge(account.todayUsedStatus)}</div>
-                                <div className="font-semibold text-[#102A24] dark:text-[#E7F7F0]">
+                                <div className="flex justify-center">{getCheckinBadge(account)}</div>
+                                <div className="flex justify-center">{getTodayUsedBadge(account.todayUsedStatus)}</div>
+                                <div className="text-center font-semibold text-[#102A24] dark:text-[#E7F7F0]">
                                   {getTodayUsedText(account)}
                                 </div>
-                                <div className="font-semibold text-[#102A24] dark:text-[#E7F7F0]">
+                                <div className="text-center font-semibold text-[#102A24] dark:text-[#E7F7F0]">
                                   {money(account.totalQuota, account.currencySymbol)}
                                 </div>
-                                <div className="font-semibold text-[#102A24] dark:text-[#E7F7F0]">
+                                <div className="text-center font-semibold text-[#102A24] dark:text-[#E7F7F0]">
                                   {money(account.remainingQuota, account.currencySymbol)}
                                 </div>
-                                <div className="min-w-0">
+                                <div className="min-w-0 text-center">
                                   <span className={cn("block whitespace-nowrap font-semibold", tone.text)}>
                                     {percent(account.usagePercent)}
                                   </span>
@@ -1491,7 +1190,7 @@ export default function QuotaMonitorPage() {
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  className="h-6 px-3 text-[10px]"
+                                  className="h-6 justify-self-center px-3 text-[10px]"
                                   onClick={() => setSelectedUsername(account.username)}
                                 >
                                   查看
@@ -1499,7 +1198,7 @@ export default function QuotaMonitorPage() {
                                 <Button
                                   size="sm"
                                   variant={account.signedToday ? "secondary" : "default"}
-                                  className="h-6 px-3 text-[10px]"
+                                  className="h-6 justify-self-center px-3 text-[10px]"
                                   disabled={account.signedToday || coolingDown || isWorking}
                                   onClick={() => void handleSingleCheckin(account)}
                                 >
@@ -1728,7 +1427,10 @@ export default function QuotaMonitorPage() {
                           今日已用
                         </span>
                         <span className="inline-flex items-center gap-1.5">
-                          <span className="h-2 w-2 rounded-full bg-[#D7E5DF]" />
+                          <span
+                            className="h-2 w-2 rounded-full"
+                            style={{ backgroundColor: chartRemainingColor }}
+                          />
                           剩余额度
                         </span>
                       </>
@@ -1747,8 +1449,43 @@ export default function QuotaMonitorPage() {
                           <XAxis dataKey="name" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
                           <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
                           <Tooltip
-                            formatter={(value) => money(Number(value ?? 0), currencySymbol)}
-                            contentStyle={chartTooltipStyle}
+                            content={({ active, payload, label }) => {
+                              if (!active || !payload?.length) return null;
+
+                              const todayUsedValue = Number(
+                                payload.find((item) => item.dataKey === "todayUsed")?.value ?? 0
+                              );
+                              const remainingQuotaValue = Number(
+                                payload.find((item) => item.dataKey === "remainingQuota")?.value ?? 0
+                              );
+
+                              return (
+                                <div
+                                  style={chartTooltipStyle}
+                                  className="min-w-[176px] rounded-[14px] px-4 py-3 shadow-[0_18px_40px_rgba(16,42,36,0.14)]"
+                                >
+                                  <p className="text-sm font-semibold" style={{ color: chartTooltipTitleColor }}>
+                                    {label}
+                                  </p>
+                                  <div className="mt-2.5 space-y-1.5">
+                                    <div
+                                      className="flex items-center justify-between gap-4 text-sm font-semibold"
+                                      style={{ color: chartTooltipValueColor }}
+                                    >
+                                      <span>今日已用</span>
+                                      <span>{money(todayUsedValue, currencySymbol)}</span>
+                                    </div>
+                                    <div
+                                      className="flex items-center justify-between gap-4 text-sm font-semibold"
+                                      style={{ color: chartTooltipValueColor }}
+                                    >
+                                      <span>剩余额度</span>
+                                      <span>{money(remainingQuotaValue, currencySymbol)}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            }}
                           />
                           <Bar dataKey="todayUsed" name="今日已用" fill={chartUsedColor} radius={[6, 6, 0, 0]} maxBarSize={20} />
                           <Bar dataKey="remainingQuota" name="剩余额度" fill={chartRemainingColor} radius={[6, 6, 0, 0]} maxBarSize={20} />
@@ -1809,98 +1546,46 @@ export default function QuotaMonitorPage() {
         </div>
       </div>
 
-      {importModalOpen ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(16,42,36,0.18)] px-4 py-6 backdrop-blur-sm"
-          onClick={() => setImportModalOpen(false)}
-        >
+      <AccountImportModal
+        isOpen={importModalOpen}
+        accountFile={dashboard?.accountFile}
+        onClose={() => setImportModalOpen(false)}
+        onSuccess={handleImportSuccess}
+        onNotice={setNotice}
+      />
+
+      <AnimatePresence>
+        {refreshToast ? (
           <motion.div
-            initial={{ opacity: 0, y: 12, scale: 0.98 }}
+            initial={{ opacity: 0, y: -18, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            className="w-full max-w-3xl"
-            onClick={(event) => event.stopPropagation()}
+            exit={{ opacity: 0, y: -12, scale: 0.98 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            className="pointer-events-none fixed inset-x-0 top-5 z-[80] flex justify-center px-4"
           >
-            <Card className="max-h-[88vh] overflow-hidden">
-              <CardHeader>
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <CardTitle>账号导入</CardTitle>
-                    <CardDescription>支持直接粘贴账号密码，或导入 `txt/json` 文件，保存后立即刷新看板。</CardDescription>
-                  </div>
-                  <Button variant="ghost" size="icon" onClick={() => setImportModalOpen(false)}>
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4 overflow-y-auto pb-6">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".txt,.json,application/json,text/plain"
-                  className="hidden"
-                  onChange={(event) => void handleImportFileChange(event)}
-                />
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <FileUp className="h-4 w-4" />
-                    选择 txt/json
-                  </Button>
-                  <Badge variant="outline" className="max-w-full truncate">
-                    {accountImportFileName || "未选择文件，可直接粘贴内容"}
-                  </Badge>
-                  {(accountImportDraft || accountImportFileName) ? (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => {
-                        setAccountImportDraft("");
-                        setAccountImportFileName("");
-                      }}
-                    >
-                      清空
-                    </Button>
-                  ) : null}
-                </div>
-
-                <textarea
-                  value={accountImportDraft}
-                  onChange={(event) => setAccountImportDraft(event.target.value)}
-                  rows={10}
-                  placeholder={ACCOUNT_IMPORT_PLACEHOLDER}
-                  className="min-h-[260px] w-full rounded-2xl border border-[#DDEAE5] bg-[rgba(255,255,255,0.84)] px-4 py-3 text-sm text-[#2F4A43] outline-none transition placeholder:text-[#9AABA5] focus:border-[#34C79A] focus:ring-2 focus:ring-[#34C79A]/15 dark:border-[#294038] dark:bg-[rgba(19,31,27,0.92)] dark:text-[#D8EEE6] dark:placeholder:text-[#7F9990]"
-                />
-
-                <div className="flex flex-col gap-3 text-xs text-muted-foreground">
-                  <span>当前保存路径：{dashboard?.accountFile || "/Users/mac/Auto_CW/accounts.txt"}</span>
-                  <span>支持格式：`username,password`、`账号：xxx，密码：yyy`、JSON 数组对象。</span>
-                </div>
-
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <span className="text-xs text-muted-foreground">
-                    保存时会覆盖当前账号文件，请确认内容无误。
-                  </span>
-                  <Button
-                    onClick={() => void handleImportAccounts()}
-                    disabled={importingAccounts || !accountImportDraft.trim()}
-                  >
-                    {importingAccounts ? (
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <FileUp className="h-4 w-4" />
-                    )}
-                    保存账号
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+            <div
+              className={cn(
+                "flex min-w-[280px] max-w-[min(92vw,420px)] items-center gap-3 rounded-[1.2rem] border px-4 py-3 shadow-[0_18px_40px_rgba(16,42,36,0.16)] backdrop-blur-md",
+                refreshToast.tone === "success"
+                  ? "border-[#BDEDDD] bg-[rgba(240,252,247,0.96)] text-[#0E5C47]"
+                  : "border-[#F4C5C5] bg-[rgba(255,246,246,0.96)] text-[#9B2C2C]"
+              )}
+            >
+              {refreshToast.tone === "success" ? (
+                <CheckCircle2 className="h-5 w-5 shrink-0 text-[#12A57E]" />
+              ) : (
+                <AlertTriangle className="h-5 w-5 shrink-0 text-[#D55C5C]" />
+              )}
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">
+                  {refreshToast.tone === "success" ? "刷新完成" : "刷新失败"}
+                </p>
+                <p className="mt-0.5 text-xs text-current/80">{refreshToast.message}</p>
+              </div>
+            </div>
           </motion.div>
-        </div>
-      ) : null}
+        ) : null}
+      </AnimatePresence>
     </main>
   );
 }
