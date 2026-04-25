@@ -64,6 +64,7 @@ export interface AccountQuota {
   checkinStatus: CheckinStatus;
   checkinMessage: string;
   todayUsed: number | null;
+  todayUsedRaw?: number | null;
   todayUsedStatus: TodayUsedStatus;
   todayUsedUpdatedAt?: string | null;
   totalQuota: number;
@@ -97,6 +98,7 @@ export interface DashboardAlert {
 export interface QuotaSummary {
   todayCheckinIncome: number;
   totalBalance: number;
+  todayUsedRawTotal: number;
   todayUsed: number;
   todayRemaining: number;
   accountCount: number;
@@ -108,7 +110,7 @@ export interface QuotaSummary {
 export interface TrendPoint {
   date: string;
   checkinIncome: number;
-  usedQuota: number;
+  usedQuota: number | null;
 }
 
 export interface QuotaDashboard {
@@ -127,6 +129,21 @@ export interface ApiEnvelope<T> {
   success: boolean;
   message: string;
   data: T;
+}
+
+export interface AuthSession {
+  authenticated: boolean;
+  username: string | null;
+  expiresAt: string | null;
+}
+
+export interface AuthConfig {
+  username: string;
+}
+
+export interface LoginResult {
+  authenticated: boolean;
+  username: string;
 }
 
 export interface CheckinResult {

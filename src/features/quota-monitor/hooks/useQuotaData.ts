@@ -21,9 +21,7 @@ export function useQuotaData(selectedUsername?: string | null) {
         selectedUsername: selectedUsername || null
       }),
     refetchInterval: QUOTA_MONITOR_REFETCH_INTERVAL_MS,
-    refetchOnWindowFocus: false,
-    staleTime: 10_000,
-    retry: 1
+    staleTime: 10_000
   });
 }
 

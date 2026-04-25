@@ -31,6 +31,22 @@ interface ParsedItem {
   label: React.ReactNode;
 }
 
+function getPlainTextLabel(node: React.ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+
+  if (Array.isArray(node)) {
+    return node.map((item) => getPlainTextLabel(item)).join("");
+  }
+
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) {
+    return getPlainTextLabel(node.props.children);
+  }
+
+  return "";
+}
+
 function extractSelectConfig(children: React.ReactNode) {
   let triggerClassName = "";
   let placeholder = "";
@@ -91,14 +107,17 @@ function Select({ value = "", onValueChange, children }: SelectProps) {
 
   const hasMatchingValue = items.some((item) => item.value === value);
   const currentValue = hasMatchingValue ? value : "";
+  const currentLabel = items.find((item) => item.value === currentValue)?.label;
+  const currentLabelText = getPlainTextLabel(currentLabel) || placeholder;
 
   return (
     <div className="relative w-full">
       <select
         value={currentValue}
         onChange={(event) => onValueChange?.(event.target.value)}
+        title={currentLabelText}
         className={cn(
-          "flex h-10 w-full appearance-none items-center justify-between rounded-full border border-[#DDEAE5] bg-[rgba(255,255,255,0.82)] px-4 py-2 pr-9 text-sm text-[#2F4A43] shadow-[inset_0_1px_0_rgba(255,255,255,0.84)] outline-none ring-offset-background focus:ring-2 focus:ring-[#34C79A]/25 disabled:cursor-not-allowed disabled:opacity-50 dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#D8EEE6]",
+          "block h-10 w-full appearance-none rounded-full border border-[#DDEAE5] bg-[rgba(255,255,255,0.82)] px-4 pr-10 text-left text-sm leading-normal text-[#2F4A43] shadow-[inset_0_1px_0_rgba(255,255,255,0.84)] outline-none ring-offset-background focus:ring-2 focus:ring-[#34C79A]/25 disabled:cursor-not-allowed disabled:opacity-50 dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#D8EEE6]",
           triggerClassName
         )}
       >
@@ -109,7 +128,7 @@ function Select({ value = "", onValueChange, children }: SelectProps) {
         ) : null}
         {items.map((item) => (
           <option key={item.value} value={item.value}>
-            {item.label}
+            {getPlainTextLabel(item.label) || item.value}
           </option>
         ))}
       </select>

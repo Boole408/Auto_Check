@@ -7,7 +7,7 @@ import type {
   UsageSyncState
 } from "@/types";
 
-export function money(value: number | null | undefined, symbol = "楼") {
+export function money(value: number | null | undefined, symbol = "¥") {
   if (value == null) return "待同步";
   return `${symbol}${Number(value).toLocaleString("zh-CN", {
     minimumFractionDigits: 2,

@@ -128,7 +128,7 @@ const AccountListItem = memo(function AccountListItem({
               <span className={cn("font-semibold", tone.text)}>{percent(account.usagePercent)}</span>
             </div>
             <p className="mt-1 truncate text-[10px] text-[#9AABA5] dark:text-[#667B73]">
-              已用 {money(account.todayUsed ?? 0, account.currencySymbol)}
+              已用 {getTodayUsedText(account)}
             </p>
           </div>
           <Button

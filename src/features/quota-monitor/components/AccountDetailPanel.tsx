@@ -145,9 +145,9 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
                 聚焦当前账号的关键指标，监控状态和同步状态。
               </CardDescription>
             </div>
-            <div className="min-w-[126px]">
+            <div className="min-w-[148px] max-w-[220px]">
               <Select value={selectedAccount?.username ?? ""} onValueChange={onSelect}>
-                <SelectTrigger className="h-8 rounded-full border-[#DDEAE5] bg-[rgba(255,255,255,0.82)] px-3 text-[11px] shadow-none dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]">
+                <SelectTrigger className="h-10 rounded-full border-[#DDEAE5] bg-[rgba(255,255,255,0.82)] px-4 text-left text-[13px] font-medium leading-normal shadow-none dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]">
                   <SelectValue placeholder="切换账号" />
                 </SelectTrigger>
                 <SelectContent>

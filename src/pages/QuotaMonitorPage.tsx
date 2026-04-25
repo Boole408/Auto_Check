@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode
+} from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
@@ -6,9 +14,11 @@ import {
   Clock3,
   FileUp,
   LoaderCircle,
+  LogOut,
   Moon,
   RefreshCw,
   ShieldAlert,
+  ShieldCheck,
   Sun,
   Zap
 } from "lucide-react";
@@ -17,7 +27,6 @@ import { CountdownTimer } from "@/components/CountdownTimer";
 import { AccountDetailPanel } from "@/features/quota-monitor/components/AccountDetailPanel";
 import { AccountListPanel } from "@/features/quota-monitor/components/AccountListPanel";
 import { OverviewPanel } from "@/features/quota-monitor/components/OverviewPanel";
-import { QuotaAnalysisPanel } from "@/features/quota-monitor/components/QuotaAnalysisPanel";
 import { type AccountFilter } from "@/features/quota-monitor/components/shared";
 import {
   QuotaMonitorActionProvider,
@@ -53,6 +62,17 @@ type RefreshToast = {
   tone: "success" | "error";
   message: string;
 } | null;
+
+const LazyQuotaAnalysisPanel = lazy(async () => {
+  const module = await import("@/features/quota-monitor/components/QuotaAnalysisPanel");
+  return { default: module.QuotaAnalysisPanel };
+});
+
+interface QuotaMonitorPageProps {
+  currentUser?: string;
+  isLoggingOut?: boolean;
+  onLogout?: () => Promise<void> | void;
+}
 
 function getAlertPresentation(alert: DashboardAlert) {
   switch (alert.type) {
@@ -105,7 +125,19 @@ function CheckinAllActionButton({
   );
 }
 
-export default function QuotaMonitorPage() {
+function AnalysisPanelFallback() {
+  return (
+    <div className="flex min-h-[252px] items-center justify-center rounded-[1.2rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.86)] text-sm text-muted-foreground shadow-[0_12px_32px_rgba(16,42,36,0.06)] dark:border-[#233A33] dark:bg-[rgba(18,28,24,0.88)] dark:shadow-[0_16px_32px_rgba(0,0,0,0.3)]">
+      正在加载图表分析...
+    </div>
+  );
+}
+
+export default function QuotaMonitorPage({
+  currentUser = "admin",
+  isLoggingOut = false,
+  onLogout
+}: QuotaMonitorPageProps) {
   const MANUAL_REFRESH_MIN_SPIN_MS = 850;
   const [selectedUsername, setSelectedUsername] = useState("");
   const [filter, setFilter] = useState<AccountFilter>("all");
@@ -310,9 +342,14 @@ export default function QuotaMonitorPage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+              <div className="flex h-9 items-center gap-2 rounded-full border border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] px-3 text-xs font-medium text-[#2F4A43] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]">
+                <ShieldCheck className="h-4 w-4 text-[#20A77F]" />
+                <span>{currentUser}</span>
+              </div>
+
               <div className="min-w-[144px]">
                 <Select value="caowo" onValueChange={() => undefined}>
-                  <SelectTrigger className="h-9 rounded-full border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] px-4 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]">
+                  <SelectTrigger className="h-9 rounded-full border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] px-4 text-left text-xs font-medium shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]">
                     <SelectValue placeholder="Provider" />
                   </SelectTrigger>
                   <SelectContent>
@@ -343,6 +380,22 @@ export default function QuotaMonitorPage() {
                 {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                 主题
               </Button>
+
+              {onLogout ? (
+                <Button
+                  variant="outline"
+                  className="h-9 border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] px-4 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]"
+                  onClick={() => void onLogout()}
+                  disabled={isLoggingOut}
+                >
+                  {isLoggingOut ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <LogOut className="h-4 w-4" />
+                  )}
+                  {isLoggingOut ? "退出中" : "退出登录"}
+                </Button>
+              ) : null}
 
               <Button
                 variant="outline"
@@ -403,7 +456,9 @@ export default function QuotaMonitorPage() {
                 usageQueue={usageQueue}
                 onSelect={setSelectedUsername}
               />
-              <QuotaAnalysisPanel dashboard={dashboard ?? null} darkMode={darkMode} />
+              <Suspense fallback={<AnalysisPanelFallback />}>
+                <LazyQuotaAnalysisPanel dashboard={dashboard ?? null} darkMode={darkMode} />
+              </Suspense>
             </aside>
           </div>
         </div>

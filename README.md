@@ -1,88 +1,139 @@
-# CW-Ops 配额监控与签到面板
+# Auto_CW
 
-CW-Ops 是一个面向多账号运维场景的配额监控与签到管理系统。项目采用前后端一体化结构：
+Auto_CW 是一个面向多账号运维场景的 CAOWO 配额监控与签到面板。项目采用前后端一体化结构：前端提供登录页和监控控制台，后端负责账号读取、登录态维护、签到队列、用量同步、自动签到调度和生产部署。
 
-- 前端使用 React 19 + TypeScript + Vite 构建运营面板
-- 后端使用 Express 提供健康检查、配额看板、签到和账号导入接口
-- 支持批量签到、失败重试、自动签到、用量同步、账号导入和趋势分析
+默认路由会按登录状态自动跳转：
 
-默认前端入口为 `/quota-monitor`，访问根路径 `/` 时会自动跳转到该页面。
+- 未登录跳转到 `/login`
+- 已登录跳转到 `/quota-monitor`
 
-## 主要功能
+## 当前能力
 
-- 多账号看板总览：展示今日签到收益、总余额、今日用量、剩余额度
-- 账号列表与详情联动：支持筛选、选中账号查看详细状态与来源
-- 单账号签到与一键签到：支持全量签到和仅重试失败账号
-- 自动签到调度：支持每日定时触发、补跑策略、失败重试和状态展示
-- 用量同步队列：后台逐个同步账号当日用量，并展示进度和冷却状态
-- 告警聚合：聚合限流、认证失败、同步超时等异常信息
-- 账号导入：支持页面或接口导入 `txt/json`，保存后覆盖账号文件
-- 数据分析：支持账号额度对比、签到趋势、用量趋势图表
-- 明暗主题切换：前端支持浅色 / 深色主题
+- 内置密码登录与 Cookie 会话
+- 多账号配额总览、余额、剩余额度、签到收益统计
+- 单账号签到与一键签到
+- 失败账号重试队列、429 冷却自动续跑
+- 当日用量后台同步与状态可视化
+- 自动签到调度、补跑与失败重试
+- 账号 `txt/json` 导入并覆盖保存
+- 7 日签到收益 / 用量趋势图
+- 登录态失效自动回跳登录页
+- 深色 / 浅色主题切换
+- Ubuntu 22.04 / 24.04 一键部署脚本
 
 ## 技术栈
 
-- 前端：React 19、TypeScript、Vite、Tailwind CSS v4、Framer Motion、Recharts
-- 数据层：TanStack React Query、Axios
-- 组件：Radix UI、自定义 UI 组件
+- 前端：React 19、TypeScript、Vite、Tailwind CSS v4
+- 状态与请求：TanStack React Query、Axios
+- 动效与图表：Framer Motion、Recharts
+- UI：Radix Slot、自定义组件
 - 后端：Node.js、Express、Axios、dotenv
+- 部署：PM2、Nginx、Certbot、Docker
 
-## 目录结构
+## 页面与路由
+
+- `/login`：登录页，只输入密码，用户名由服务端配置返回
+- `/quota-monitor`：主控制台
+- `/api/health`：健康检查
+- `/api/auth/*`：登录、登出、会话、登录配置
+- `/api/quota-monitor/*`：看板、签到、账号导入
+
+## 主要目录
 
 ```text
 .
-├─ deploy/                               # Docker、Nginx、低内存服务器辅助脚本
-├─ public/                               # 静态资源
+├─ deploy/
+│  ├─ install-linux.sh               # Ubuntu 一键安装入口
+│  ├─ setup-ubuntu.sh                # 系统依赖安装 helper
+│  ├─ setup-swap.sh                  # 2G swap helper
+│  ├─ configure-pm2-logrotate.sh     # PM2 日志轮转配置
+│  ├─ pm2.ecosystem.config.cjs       # PM2 配置
+│  ├─ cw-ops.nginx.conf              # Nginx HTTPS 模板
+│  ├─ .env.production.example        # 生产环境模板
+│  ├─ UBUNTU_DEPLOY.md               # Ubuntu 部署说明
+│  └─ Dockerfile                     # Docker 镜像构建
+├─ public/
 ├─ scripts/
-│  └─ start-dev.js                       # 一键启动脚本
+│  └─ start-dev.js                   # 一键启动前后端并自动找空闲端口
 ├─ server/
 │  ├─ api/
-│  │  └─ quota.js                        # 配额监控与签到相关接口
+│  │  ├─ auth.js                     # 认证接口
+│  │  └─ quota.js                    # 看板、签到、导入接口
 │  ├─ utils/
-│  │  ├─ accountLoader.js                # 账号文件读取、解析、保存
-│  │  └─ caowo.js                        # 站点交互、缓存、队列、自动签到核心逻辑
-│  └─ index.js                           # Express 服务入口
+│  │  ├─ accountLoader.js            # 账号文件解析与保存
+│  │  ├─ auth.js                     # 登录态与 Cookie
+│  │  └─ caowo.js                    # 站点交互、缓存、队列、自动签到
+│  └─ index.js                       # Express 入口
 ├─ src/
-│  ├─ components/                        # 通用组件与账号导入弹窗
+│  ├─ components/
+│  │  ├─ AccountImportModal.tsx
+│  │  ├─ CountdownTimer.tsx
+│  │  └─ ui/
 │  ├─ features/
 │  │  └─ quota-monitor/
-│  │     ├─ components/                  # 总览、列表、详情、分析面板
-│  │     ├─ context/                     # 看板操作上下文
-│  │     └─ hooks/                       # 配额查询与签到 hooks
-│  ├─ lib/                               # Axios 封装、格式化工具
+│  │     ├─ components/
+│  │     ├─ context/
+│  │     └─ hooks/
+│  ├─ lib/
 │  ├─ pages/
-│  │  └─ QuotaMonitorPage.tsx            # 页面组合层
+│  │  ├─ LoginPage.tsx
+│  │  └─ QuotaMonitorPage.tsx
 │  ├─ services/
-│  │  ├─ account.ts                      # 账号相关请求
-│  │  └─ quota.ts                        # 配额与批量签到请求
-│  ├─ router.tsx                         # 轻量前端路由
-│  └─ types/                             # 前后端共享类型
-├─ accounts.txt                          # 默认账号文件，本地使用，不纳入 git
-├─ .env.example                          # 环境变量示例
+│  ├─ types/
+│  ├─ router.tsx
+│  └─ main.tsx
+├─ .env.example
+├─ accounts.txt                      # 本地默认账号文件，已忽略提交
 ├─ package.json
 └─ README.md
 ```
 
-## 快速开始
+## 本地开发
 
-### 1. 环境要求
+### 环境要求
 
 - Node.js 20+
 - npm 10+
 
-### 2. 安装依赖
+### 安装依赖
 
 ```bash
 npm install
 ```
 
-如果你在 Windows PowerShell 中遇到 `npm.ps1` 被执行策略拦截，可以改用：
+PowerShell 如遇执行策略限制，可改用：
 
 ```powershell
 npm.cmd install
 ```
 
-### 3. 一键启动前后端
+### 准备环境变量
+
+复制 `.env.example` 为 `.env`，至少补齐登录密码和 Session Secret：
+
+```env
+HOST=127.0.0.1
+PORT=3000
+CORS_ORIGIN=http://127.0.0.1:5183
+APP_LOGIN_USERNAME=admin
+APP_LOGIN_PASSWORD=your-password
+APP_LOGIN_SESSION_SECRET=your-random-secret
+CAOWO_BASE_URL=https://caowo.xin
+CAOWO_ACCOUNTS_FILE=./accounts.txt
+CAOWO_CACHE_TTL_MS=10000
+CAOWO_RATE_LIMIT_COOLDOWN_MS=180000
+CAOWO_USAGE_SYNC_DELAY_MS=4000
+CAOWO_TIMEOUT_MS=15000
+CAOWO_AUTO_CHECKIN_ENABLED=1
+CAOWO_AUTO_CHECKIN_TIME=00:01
+CAOWO_AUTO_CHECKIN_TZ=Asia/Shanghai
+CAOWO_AUTO_CHECKIN_CATCH_UP=1
+CAOWO_AUTO_CHECKIN_RETRY_MINUTES=10
+CAOWO_DEBUG=0
+VITE_API_BASE_URL=
+```
+
+### 启动前后端
 
 ```bash
 npm run dev
@@ -94,26 +145,22 @@ npm run dev
 npm run start:oneclick
 ```
 
-说明：
+`scripts/start-dev.js` 会：
 
-- 两个脚本当前都指向 `scripts/start-dev.js`
-- 若 `node_modules` 不存在，启动脚本会先自动执行安装
-- 启动脚本会自动寻找可用端口，并在终端输出最终访问地址
-- 默认优先端口为后端 `3000`、前端 `5183`
-- 默认前端 Host 为 `127.0.0.1`
+- 在 `node_modules` 缺失时自动执行 `npm install`
+- 自动寻找可用后端端口，默认从 `3000` 开始
+- 自动寻找可用前端端口，默认从 `5183` 开始
+- 自动注入 `VITE_API_BASE_URL`
 
 默认访问地址：
 
-- 前端：[http://127.0.0.1:5183/quota-monitor](http://127.0.0.1:5183/quota-monitor)
-- 健康检查：[http://localhost:3000/api/health](http://localhost:3000/api/health)
+- 登录页：[http://127.0.0.1:5183/login](http://127.0.0.1:5183/login)
+- 控制台：[http://127.0.0.1:5183/quota-monitor](http://127.0.0.1:5183/quota-monitor)
+- 健康检查：[http://127.0.0.1:3000/api/health](http://127.0.0.1:3000/api/health)
 
-如果 PowerShell 里直接执行 `npm` 被拦截，可以用：
+如果端口被占用，启动脚本会自动顺延到下一个可用端口。
 
-```powershell
-npm.cmd run dev
-```
-
-### 4. 分开启动
+### 分开启动
 
 只启动后端：
 
@@ -127,99 +174,76 @@ npm run server
 npm run client
 ```
 
-Windows PowerShell 下可写成：
+PowerShell 可写成：
 
 ```powershell
 npm.cmd run server
 npm.cmd run client
 ```
 
-## 构建与运行
-
-### 生产构建
+## 生产构建
 
 ```bash
 npm run build
 ```
 
-### 生产运行
+构建命令实际执行：
 
-```bash
-npm run server
-```
+- `tsc --noEmit`
+- `vite build`
 
-说明：
-
-- `server/index.js` 会同时提供 API 和 `dist/` 静态资源服务
-- 生产环境运行前应先执行 `npm run build`
-- 如果只运行后端但没有构建前端，API 仍可工作，但页面静态资源不会完整提供
+构建完成后，Node 服务会同时提供 API 和 `dist/` 静态资源。
 
 ## 环境变量
 
-以下是当前代码中实际支持的主要环境变量。
+以下变量是当前工程里已经实际使用的配置项。
 
-### 基础变量
+### 基础服务
 
 | 变量名 | 默认值 | 说明 |
 | --- | --- | --- |
-| `PORT` | `3000` | 后端服务端口 |
-| `CORS_ORIGIN` | 空 | 允许的跨域来源，多个值可用英文逗号分隔 |
-| `CAOWO_BASE_URL` | `https://caowo.xin` | 目标站点基础地址 |
-| `CAOWO_ACCOUNTS_FILE` | `./accounts.txt` | 账号文件路径 |
-| `CAOWO_CACHE_TTL_MS` | `10000` | 看板缓存时间，单位毫秒 |
-| `CAOWO_RATE_LIMIT_COOLDOWN_MS` | `180000` | 限流冷却时间，单位毫秒 |
-| `CAOWO_USAGE_SYNC_DELAY_MS` | `4000` | 账号用量同步间隔，单位毫秒 |
-| `CAOWO_TIMEOUT_MS` | `15000` | 请求超时，单位毫秒 |
-| `CAOWO_DEBUG` | `0` | 是否输出调试日志，`1` 为开启 |
+| `NODE_ENV` | `development` | 生产环境建议显式设为 `production` |
+| `HOST` | `127.0.0.1` | Node 服务监听地址 |
+| `PORT` | `3000` | Node 服务端口 |
+| `CORS_ORIGIN` | 空 | 允许跨域来源，多个值可用英文逗号分隔 |
+| `VITE_API_BASE_URL` | 空 | 前端 API 基础地址，留空时本地开发走代理 |
+| `VITE_HOST` | `127.0.0.1` | Vite 开发服务器 Host |
+| `VITE_PORT` | `5183` | Vite 开发服务器端口 |
 
-### 自动签到相关
+### 登录认证
+
+| 变量名 | 默认值 | 说明 |
+| --- | --- | --- |
+| `APP_LOGIN_USERNAME` | `admin` | 登录页展示的用户名 |
+| `APP_LOGIN_PASSWORD` | `yuqiaa` | 登录密码；生产环境必须改成强密码 |
+| `APP_LOGIN_SESSION_SECRET` | `auto-cw-session-secret` | Cookie 签名密钥；生产环境必须替换 |
+| `APP_LOGIN_SESSION_TTL_MS` | `604800000` | 登录态有效期，默认 7 天 |
+
+### 目标站点与运行策略
+
+| 变量名 | 默认值 | 说明 |
+| --- | --- | --- |
+| `CAOWO_BASE_URL` | `https://caowo.xin` | 目标站点地址 |
+| `CAOWO_ACCOUNTS_FILE` | `./accounts.txt` | 账号文件路径 |
+| `CAOWO_CACHE_TTL_MS` | `10000` | 看板缓存时间，毫秒 |
+| `CAOWO_RATE_LIMIT_COOLDOWN_MS` | `180000` | 429 冷却时间，毫秒 |
+| `CAOWO_USAGE_SYNC_DELAY_MS` | `4000` | 账号用量同步间隔，毫秒 |
+| `CAOWO_TIMEOUT_MS` | `15000` | 上游请求超时，毫秒 |
+| `CAOWO_DEBUG` | `0` | 为 `1` 时输出调试日志 |
+
+### 自动签到
 
 | 变量名 | 默认值 | 说明 |
 | --- | --- | --- |
 | `CAOWO_AUTO_CHECKIN_ENABLED` | `1` | 是否启用自动签到 |
-| `CAOWO_AUTO_CHECKIN_TIME` | `00:01` | 每日自动签到时间，格式 `HH:mm` |
+| `CAOWO_AUTO_CHECKIN_TIME` | `00:01` | 每日触发时间，格式 `HH:mm` |
 | `CAOWO_AUTO_CHECKIN_TZ` | `Asia/Shanghai` | 自动签到时区 |
-| `CAOWO_AUTO_CHECKIN_CATCH_UP` | `1` | 错过触发时点后是否当天补跑 |
-| `CAOWO_AUTO_CHECKIN_RETRY_MINUTES` | `10` | 自动签到失败后的重试间隔，单位分钟 |
+| `CAOWO_AUTO_CHECKIN_CATCH_UP` | `1` | 错过时间点后是否当天补跑 |
+| `CAOWO_AUTO_CHECKIN_RETRY_MINUTES` | `10` | 自动触发失败后的重试间隔，分钟 |
 
-### 前端相关
+## 账号文件
 
-| 变量名 | 默认值 | 说明 |
-| --- | --- | --- |
-| `VITE_API_BASE_URL` | 空 | 前端请求 API 的基础地址，留空时走同源或本地代理 |
-| `VITE_HOST` | `127.0.0.1` | Vite 开发服务器 Host |
-| `VITE_PORT` | `5183` | Vite 开发服务器端口 |
-
-示例：
-
-```env
-PORT=3000
-CORS_ORIGIN=http://localhost:5183
-CAOWO_BASE_URL=https://caowo.xin
-CAOWO_ACCOUNTS_FILE=./accounts.txt
-CAOWO_CACHE_TTL_MS=10000
-CAOWO_RATE_LIMIT_COOLDOWN_MS=180000
-CAOWO_USAGE_SYNC_DELAY_MS=4000
-CAOWO_TIMEOUT_MS=15000
-CAOWO_AUTO_CHECKIN_ENABLED=1
-CAOWO_AUTO_CHECKIN_TIME=00:01
-CAOWO_AUTO_CHECKIN_TZ=Asia/Shanghai
-CAOWO_AUTO_CHECKIN_CATCH_UP=1
-CAOWO_AUTO_CHECKIN_RETRY_MINUTES=10
-CAOWO_DEBUG=0
-VITE_HOST=127.0.0.1
-VITE_PORT=5183
-VITE_API_BASE_URL=
-```
-
-说明：
-
-- 使用一键启动脚本时，`PORT` 和 `VITE_PORT` 会被当作“优先起始端口”，如果端口已占用，脚本会自动顺延寻找可用端口
-- 分离部署前后端时，建议显式设置 `VITE_API_BASE_URL`
-
-## 账号文件格式
-
-默认账号文件路径为：
+默认账号文件为：
 
 ```text
 ./accounts.txt
@@ -239,14 +263,14 @@ user_a,pass_a
 user_b,pass_b
 ```
 
-也支持带键名的写法：
+也支持带字段名的格式：
 
 ```text
 账号：user_a，密码：pass_a
 username: user_b, password: pass_b
 ```
 
-前端导入弹窗和导入接口还支持 JSON：
+也支持 JSON：
 
 ```json
 [
@@ -255,15 +279,15 @@ username: user_b, password: pass_b
 ]
 ```
 
-说明：
+解析规则：
 
-- 系统会按 `username` 去重
-- 页面导入保存时会覆盖当前账号文件内容
-- `accounts.txt` 已被 `.gitignore` 忽略，适合本地或服务器私有配置
+- 自动去重，按 `username` 保留首个有效账号
+- 导入保存时会覆盖当前账号文件
+- 支持从 `{ accounts: [...] }` 或 `{ data: [...] }` 结构解析
 
 ## API 概览
 
-接口统一返回如下结构：
+接口统一返回：
 
 ```json
 {
@@ -273,50 +297,36 @@ username: user_b, password: pass_b
 }
 ```
 
-### 健康检查
+### 无需登录
 
 - `GET /api/health`
+- `GET /api/auth/config`
+- `GET /api/auth/session`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
 
-### 配额看板
+### 需要登录
 
 - `GET /api/quota-monitor`
 - `GET /api/quota-monitor?force=1`
 - `GET /api/quota-monitor?selected=<username>`
-
-`/api/quota-monitor` 返回的核心数据包括：
-
-- `summary`：总览汇总
-- `accounts`：账号列表
-- `alerts`：聚合告警
-- `trend`：趋势图数据
-- `accountFile`：当前账号文件路径
-- `sync`：签到队列、用量同步、自动签到状态
-
-### 单账号签到
-
 - `POST /api/quota-monitor/accounts/:username/checkin`
-
-### 批量签到
-
 - `POST /api/quota-monitor/checkin-all`
+- `POST /api/quota-monitor/accounts/import`
 
-请求体示例：
+批量签到请求体：
 
 ```json
 { "scope": "all" }
 ```
 
-或仅重试失败账号：
+失败账号重试：
 
 ```json
 { "scope": "failed" }
 ```
 
-### 账号导入
-
-- `POST /api/quota-monitor/accounts/import`
-
-请求体示例：
+账号导入请求体：
 
 ```json
 {
@@ -325,7 +335,7 @@ username: user_b, password: pass_b
 }
 ```
 
-也可以导入 JSON：
+或：
 
 ```json
 {
@@ -334,82 +344,110 @@ username: user_b, password: pass_b
 }
 ```
 
-## 前端页面结构
+## 看板数据说明
 
-当前看板页面由以下模块组成：
+前端每 30 秒自动刷新一次看板数据，并支持手动强制刷新。当前返回数据主要包括：
 
-- `OverviewPanel`：总览指标、任务完成度、自动签到状态
-- `AccountListPanel`：账号列表、筛选、失败重试、单账号签到
-- `AccountDetailPanel`：当前账号详细指标、状态与同步信息
-- `QuotaAnalysisPanel`：额度对比、签到趋势、用量趋势图
-- `AccountImportModal`：账号文件导入弹窗
+- `summary`：总余额、今日收益、今日用量、剩余额度、账号数量
+- `accounts`：每个账号的签到状态、余额、用量、剩余额度、数据来源
+- `alerts`：429、登录失效、同步超时等告警
+- `trend`：最近 7 天签到收益 / 用量趋势
+- `sync`：签到队列、用量同步队列、自动签到状态
+- `accountFile`：当前账号文件实际路径
 
-前端数据层使用 React Query：
+其中用量状态使用以下语义：
 
-- 看板数据默认每 30 秒自动刷新一次
-- 手动刷新会触发强制拉取并刷新缓存
-- 签到和导入成功后会自动失效并重新拉取看板数据
+- `exact`：精确值
+- `stale`：缓存值
+- `pending`：等待后台同步
+- `unavailable`：当前不可用
 
-## 部署资源
+## 运行时缓存
 
-仓库已提供基础部署辅助文件：
+以下内容属于运行时数据，不建议提交到仓库：
 
-- `deploy/Dockerfile`：容器化构建与运行
-- `deploy/cw-ops.nginx.conf`：Nginx 反向代理示例
-- `deploy/setup-swap.sh`：低内存 Linux 服务器增加 swap 的辅助脚本
-
-如果使用 Docker，可从仓库根目录执行类似命令：
-
-```bash
-docker build -f deploy/Dockerfile -t cw-ops .
-```
-
-项目中的 Dockerfile 使用 `pnpm` 进行镜像内安装与构建；本地开发仍以 `npm` 脚本为主。
-
-## 运行期文件
-
-以下目录或文件属于运行时产物或本地私有配置，默认不应提交到仓库：
-
-- `.cache/`：会话缓存和自动签到状态缓存
+- `.cache/caowo-sessions.json`：账号会话缓存
+- `.cache/caowo-auto-checkin.json`：自动签到状态缓存
 - `dist/`：前端构建产物
 - `.env`：本地环境变量
 - `accounts.txt`：本地账号文件
 
-## 常见问题
+`.gitignore` 已默认忽略这些文件。
 
-### 1. PowerShell 里执行 `npm` 报脚本被禁止
+## Docker
 
-优先使用：
+构建镜像：
 
-```powershell
-npm.cmd run dev
+```bash
+docker build -f deploy/Dockerfile -t auto-cw .
 ```
 
-或：
+运行示例：
 
-```powershell
-npm.cmd run server
+```bash
+docker run -d \
+  --name auto-cw \
+  -p 3000:3000 \
+  --env-file .env \
+  -v auto-cw-cache:/app/.cache \
+  -v auto-cw-data:/app/data \
+  auto-cw
 ```
 
-### 2. 前端打不开或接口连不上
+镜像默认：
 
-检查以下几点：
+- 使用 `node:20-alpine`
+- 容器内监听 `0.0.0.0:3000`
+- 账号文件路径为 `/app/data/accounts.txt`
+- 挂载 `/app/.cache` 与 `/app/data`
 
-- 后端健康检查是否可访问：`/api/health`
-- 当前实际端口是否被一键启动脚本自动顺延
-- `VITE_API_BASE_URL` 是否配置正确
-- `PORT`、`VITE_PORT` 是否和现有服务冲突
+## Ubuntu 一键部署
 
-### 3. 看板没有账号数据
+推荐在 Ubuntu 22.04 / 24.04 服务器上使用仓库自带脚本：
 
-检查以下几点：
+```bash
+bash deploy/install-linux.sh
+```
 
-- `accounts.txt` 是否存在
-- `CAOWO_ACCOUNTS_FILE` 是否指向正确路径
-- 账号文件内容是否符合支持格式
-- 是否误用了空文件覆盖了账号文件
+安装脚本会在当前仓库目录中完成：
 
-## 许可与注意事项
+- 系统依赖安装
+- `npm ci` 与 `npm run build`
+- 发布到 `/opt/auto-cw/app`
+- 生成或复用 `/opt/auto-cw/app/.env`
+- 创建并保留 `/opt/auto-cw/data/accounts.txt`
+- PM2 启动与持久化
+- Nginx 站点配置
+- Certbot 证书申请
+- 健康检查与最终汇总
 
-- 当前仓库更偏向私有运维工具形态，默认假设账号和环境变量由你本地维护
-- 请不要把真实账号、密码、`.env` 和 `accounts.txt` 提交到公共仓库
+更多细节见 [deploy/UBUNTU_DEPLOY.md](deploy/UBUNTU_DEPLOY.md)。
+
+## 常用命令
+
+```bash
+npm run dev
+npm run build
+npm run server
+curl http://127.0.0.1:3000/api/health
+```
+
+生产环境：
+
+```bash
+pm2 status
+pm2 logs auto-cw --lines 50
+```
+
+## 注意事项
+
+- 生产环境必须修改 `APP_LOGIN_PASSWORD` 和 `APP_LOGIN_SESSION_SECRET`
+- `NODE_ENV=production` 时，后端会校验上述两项是否仍为默认占位值
+- 登录态使用 Cookie，生产环境会自动启用 `secure` Cookie
+- 账号导入保存会覆盖当前账号文件，部署前请先备份真实数据
+- 一键部署脚本会启用 UFW 并放行 `OpenSSH`、`80/tcp`、`443/tcp`
+
+## 许可与使用提醒
+
+- 本项目更接近私有运维工具，默认假设配置和账号由部署者自行维护
+- 请不要把真实账号、密码、`.env`、`accounts.txt` 提交到公共仓库

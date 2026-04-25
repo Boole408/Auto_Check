@@ -61,14 +61,18 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
     () =>
       dashboard?.accounts.map((account) => ({
         name: account.displayName || account.username,
-        todayUsed: account.todayUsed ?? 0,
+        todayUsed:
+          account.todayUsedStatus === "exact" || account.todayUsedStatus === "stale"
+            ? account.todayUsed
+            : null,
         remainingQuota: account.remainingQuota,
         balance: account.balance
       })) ?? [],
     [dashboard?.accounts]
   );
   const trendData = dashboard?.trend ?? [];
-  const currencySymbol = dashboard?.currencySymbol || dashboard?.accounts[0]?.currencySymbol || "楼";
+  const usageTrendData = trendData.filter((item) => item.usedQuota != null);
+  const currencySymbol = dashboard?.currencySymbol || dashboard?.accounts[0]?.currencySymbol || "¥";
   const analysisMeta = ANALYSIS_TABS.find((item) => item.key === analysisTab) ?? ANALYSIS_TABS[0];
   const chartGridStroke = darkMode ? "#1F322C" : "#E8F0EC";
   const chartMargin = { top: 14, right: 8, left: -18, bottom: 6 };
@@ -102,7 +106,9 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
                 </CardDescription>
               </div>
               <Badge variant="outline" className="px-3 py-1 text-[11px]">
-                最近 {trendData.length || comparisonData.length} 条数据
+                {analysisTab === "usageTrend"
+                  ? `已同步 ${usageTrendData.length} 天`
+                  : `最近 ${trendData.length || comparisonData.length} 条数据`}
               </Badge>
             </div>
 
@@ -160,11 +166,15 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
                       if (!active || !payload?.length) return null;
 
                       const todayUsedValue = Number(
-                        payload.find((item) => item.dataKey === "todayUsed")?.value ?? 0
+                        payload.find((item) => item.dataKey === "todayUsed")?.value
                       );
                       const remainingQuotaValue = Number(
-                        payload.find((item) => item.dataKey === "remainingQuota")?.value ?? 0
+                        payload.find((item) => item.dataKey === "remainingQuota")?.value
                       );
+                      const todayUsedRawValue = payload.find((item) => item.dataKey === "todayUsed")?.value;
+                      const remainingQuotaRawValue = payload.find(
+                        (item) => item.dataKey === "remainingQuota"
+                      )?.value;
 
                       return (
                         <div
@@ -180,14 +190,22 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
                               style={{ color: chartTooltipValueColor }}
                             >
                               <span>今日已用</span>
-                              <span>{money(todayUsedValue, currencySymbol)}</span>
+                              <span>
+                                {todayUsedRawValue == null
+                                  ? "待同步"
+                                  : money(todayUsedValue, currencySymbol)}
+                              </span>
                             </div>
                             <div
                               className="flex items-center justify-between gap-4 text-sm font-semibold"
                               style={{ color: chartTooltipValueColor }}
                             >
                               <span>剩余额度</span>
-                              <span>{money(remainingQuotaValue, currencySymbol)}</span>
+                              <span>
+                                {remainingQuotaRawValue == null
+                                  ? "待同步"
+                                  : money(remainingQuotaValue, currencySymbol)}
+                              </span>
                             </div>
                           </div>
                         </div>
@@ -213,7 +231,9 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
                   <XAxis dataKey="date" tick={chartAxisTickStyle} tickMargin={10} height={26} />
                   <YAxis tick={chartAxisTickStyle} />
                   <Tooltip
-                    formatter={(value) => money(Number(value ?? 0), currencySymbol)}
+                    formatter={(value) =>
+                      value == null ? "未同步" : money(Number(value), currencySymbol)
+                    }
                     contentStyle={chartTooltipStyle}
                   />
                   <Line
@@ -230,26 +250,34 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
             ) : null}
 
             {analysisTab === "usageTrend" ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trendData} margin={chartMargin}>
-                  <CartesianGrid stroke={chartGridStroke} strokeOpacity={1} vertical={false} />
-                  <XAxis dataKey="date" tick={chartAxisTickStyle} tickMargin={10} height={26} />
-                  <YAxis tick={chartAxisTickStyle} />
-                  <Tooltip
-                    formatter={(value) => money(Number(value ?? 0), currencySymbol)}
-                    contentStyle={chartTooltipStyle}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="usedQuota"
-                    name="已用额度"
-                    stroke="#34C79A"
-                    strokeWidth={2.5}
-                    dot={{ r: 3, fill: "#34C79A" }}
-                    activeDot={{ r: 4.5 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
+              usageTrendData.length ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={usageTrendData} margin={chartMargin}>
+                    <CartesianGrid stroke={chartGridStroke} strokeOpacity={1} vertical={false} />
+                    <XAxis dataKey="date" tick={chartAxisTickStyle} tickMargin={10} height={26} />
+                    <YAxis tick={chartAxisTickStyle} />
+                    <Tooltip
+                      formatter={(value) =>
+                        value == null ? "未同步" : money(Number(value), currencySymbol)
+                      }
+                      contentStyle={chartTooltipStyle}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="usedQuota"
+                      name="已用额度"
+                      stroke="#34C79A"
+                      strokeWidth={2.5}
+                      dot={{ r: 3, fill: "#34C79A" }}
+                      activeDot={{ r: 4.5 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                  暂无已同步的真实用量趋势数据
+                </div>
+              )
             ) : null}
           </div>
         </CardContent>

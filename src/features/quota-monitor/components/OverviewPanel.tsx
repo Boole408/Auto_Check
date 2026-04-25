@@ -3,10 +3,10 @@ import { motion } from "framer-motion";
 import {
   Activity,
   CheckCircle2,
-  Gauge,
+  Coins,
   RefreshCw,
   ShieldAlert,
-  WalletCards,
+  WalletMinimal,
   Zap
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -21,8 +21,8 @@ import {
   normalizeUsageQueue,
   percent
 } from "@/lib/formatters";
-import type { QuotaDashboard } from "@/types";
 import { QueueMetaCell } from "@/features/quota-monitor/components/shared";
+import type { QuotaDashboard } from "@/types";
 
 interface OverviewPanelProps {
   dashboard: QuotaDashboard | null;
@@ -35,53 +35,76 @@ export const OverviewPanel = memo(function OverviewPanel({ dashboard }: Overview
     () => normalizeUsageQueue(dashboard?.sync.usageSync),
     [dashboard?.sync.usageSync]
   );
-  const checkinQueue = dashboard?.sync.checkinQueue;
   const autoCheckin = dashboard?.sync.autoCheckin;
-  const currencySymbol = dashboard?.currencySymbol || dashboard?.accounts[0]?.currencySymbol || "楼";
-  const failedAccountsCount = checkinQueue?.progress.failed ?? 0;
-  const checkinCompleted = checkinQueue?.progress.completed ?? 0;
-  const checkinSkipped = checkinQueue?.progress.skipped ?? 0;
-  const checkinFailed = checkinQueue?.progress.failed ?? 0;
-  const checkinTotal = checkinQueue?.progress.total ?? 0;
-  const checkinHandled = checkinCompleted + checkinSkipped;
+  const accounts = dashboard?.accounts ?? [];
+  const currencySymbol = dashboard?.currencySymbol || accounts[0]?.currencySymbol || "¥";
+
+  const accountCount = dashboard?.summary.accountCount ?? accounts.length ?? 0;
+  const checkinCompleted =
+    dashboard?.summary.checkedInCount ?? accounts.filter((account) => account.signedToday).length;
+  const checkinFailed = accounts.filter((account) => account.checkinStatus === "failed").length;
+  const checkinPending = Math.max(accountCount - checkinCompleted - checkinFailed, 0);
+  const checkinDisplayTotal = accountCount;
+
+  const usageCoverageCompleted = dashboard?.summary.todayUsedCoverage.exactOrStaleAccounts ?? 0;
+  const usageCoverageTotal = dashboard?.summary.todayUsedCoverage.totalAccounts ?? 0;
   const usagePending =
     usageQueue?.progress.pending ??
     Math.max(
-      (usageQueue?.progress.total ?? 0) -
-        (usageQueue?.progress.completed ?? 0) -
+      (usageQueue?.progress.total ?? usageCoverageTotal) -
+        (usageQueue?.progress.completed ?? usageCoverageCompleted) -
         (usageQueue?.progress.skipped ?? 0) -
         (usageQueue?.progress.failed ?? 0),
       0
     );
-  const usageCoverageCompleted = dashboard?.summary.todayUsedCoverage.exactOrStaleAccounts ?? 0;
-  const usageCoverageTotal = dashboard?.summary.todayUsedCoverage.totalAccounts ?? 0;
-  const accountCount = dashboard?.summary.accountCount ?? dashboard?.accounts.length ?? 0;
-  const checkinDisplayTotal = checkinTotal || accountCount;
   const usageDisplayTotal = usageCoverageTotal || accountCount;
-  const issueAccountsCount = (dashboard?.accounts ?? []).filter(
+
+  const issueAccountsCount = accounts.filter(
     (account) => account.checkinStatus === "failed" || account.todayUsedStatus === "unavailable"
   ).length;
+
   const overallTaskTotal = checkinDisplayTotal + usageDisplayTotal;
-  const overallTaskCompleted = checkinHandled + usageCoverageCompleted;
+  const overallTaskCompleted = checkinCompleted + usageCoverageCompleted;
   const overallProgress = overallTaskTotal ? (overallTaskCompleted / overallTaskTotal) * 100 : 0;
+  const overallProgressHint = accountCount
+    ? `共 ${accountCount} 个账号，按“签到 + 用量同步”两项统计`
+    : "按“签到 + 用量同步”两项统计";
+  const todayUsedRawTotal = Math.round(dashboard?.summary.todayUsedRawTotal ?? 0);
+  const todayUsedRawText = dashboard
+    ? `${todayUsedRawTotal.toLocaleString("zh-CN")} tokens`
+    : "加载中";
 
   const primaryOverviewCards = [
     {
       label: "签到完成",
-      value: `${checkinHandled} / ${checkinDisplayTotal}`,
-      hint: checkinFailed ? `${checkinFailed} 个异常待处理` : "账号已完成签到",
+      value: dashboard ? `${checkinCompleted} / ${checkinDisplayTotal}` : "加载中",
+      hint: dashboard
+        ? checkinFailed
+          ? `${checkinFailed} 个签到异常待处理`
+          : checkinPending
+            ? `${checkinPending} 个账号待签到`
+            : "全部账号今日已签到"
+        : "等待接口返回",
       icon: CheckCircle2
     },
     {
       label: "用量同步",
-      value: `${usageCoverageCompleted} / ${usageDisplayTotal}`,
-      hint: usagePending ? `${usagePending} 个账号待同步` : "同步覆盖已完成",
+      value: dashboard ? `${usageCoverageCompleted} / ${usageDisplayTotal}` : "加载中",
+      hint: dashboard
+        ? usagePending
+          ? `${usagePending} 个账号待同步`
+          : "全部账号当日用量已同步"
+        : "等待接口返回",
       icon: RefreshCw
     },
     {
       label: "异常账号",
-      value: issueAccountsCount,
-      hint: issueAccountsCount ? "优先处理登录或同步异常" : "当前没有明显异常",
+      value: dashboard ? issueAccountsCount : "加载中",
+      hint: dashboard
+        ? issueAccountsCount
+          ? "优先处理登录或同步异常"
+          : "当前没有明显异常"
+        : "等待接口返回",
       icon: ShieldAlert
     }
   ];
@@ -89,27 +112,29 @@ export const OverviewPanel = memo(function OverviewPanel({ dashboard }: Overview
   const summaryCards = [
     {
       title: "今日总签到收益",
-      value: money(dashboard?.summary.todayCheckinIncome ?? 0, currencySymbol),
+      value: dashboard ? money(dashboard.summary.todayCheckinIncome, currencySymbol) : "加载中",
       icon: Zap,
-      hint: `${dashboard?.summary.checkedInCount ?? 0}/${dashboard?.summary.accountCount ?? 0} 个账号已签到`
+      hint: dashboard ? `${checkinCompleted}/${accountCount} 个账号已签到` : "等待接口返回"
     },
     {
-      title: "总账号余额",
-      value: money(dashboard?.summary.totalBalance ?? 0, currencySymbol),
-      icon: WalletCards,
-      hint: "仅统计 quota 主余额"
+      title: "当日总 Token 消耗量",
+      value: todayUsedRawText,
+      icon: Coins,
+      hint: `按接口原始用量汇总，覆盖 ${usageCoverageCompleted}/${usageDisplayTotal}`
     },
     {
       title: "今日已用额度",
-      value: money(dashboard?.summary.todayUsed ?? 0, currencySymbol),
+      value: dashboard ? money(dashboard.summary.todayUsed, currencySymbol) : "加载中",
       icon: Activity,
-      hint: `覆盖 ${dashboard?.summary.todayUsedCoverage.exactOrStaleAccounts ?? 0}/${dashboard?.summary.todayUsedCoverage.totalAccounts ?? 0}`
+      hint: dashboard ? `覆盖 ${usageCoverageCompleted}/${usageDisplayTotal}` : "等待接口返回"
     },
     {
       title: "今日剩余额度",
-      value: money(dashboard?.summary.todayRemaining ?? 0, currencySymbol),
-      icon: Gauge,
-      hint: `覆盖 ${dashboard?.summary.todayRemainingCoverage.exactOrStaleAccounts ?? 0}/${dashboard?.summary.todayRemainingCoverage.totalAccounts ?? 0}`
+      value: dashboard ? money(dashboard.summary.todayRemaining, currencySymbol) : "加载中",
+      icon: WalletMinimal,
+      hint: dashboard
+        ? `覆盖 ${dashboard.summary.todayRemainingCoverage.exactOrStaleAccounts}/${dashboard.summary.todayRemainingCoverage.totalAccounts}`
+        : "等待接口返回"
     }
   ];
 
@@ -119,9 +144,11 @@ export const OverviewPanel = memo(function OverviewPanel({ dashboard }: Overview
         <CardHeader className="pb-2.5">
           <div className="flex items-end justify-between gap-3">
             <div>
-              <CardTitle className="text-[1.08rem] text-[#102A24] dark:text-[#E7F7F0]">今日总览</CardTitle>
+              <CardTitle className="text-[1.08rem] text-[#102A24] dark:text-[#E7F7F0]">
+                今日总览
+              </CardTitle>
               <CardDescription className="mt-1 text-[12px] text-[#71867F] dark:text-[#8DA69E]">
-                刷新时间 {formatCompactTime(dashboard?.refreshedAt)}，优先显示今天需要处理的任务与告警信息。
+                刷新时间 {formatCompactTime(dashboard?.refreshedAt)}，优先展示今天需要处理的任务与告警信息。
               </CardDescription>
             </div>
             <p className="hidden text-[11px] text-[#9AABA5] dark:text-[#657A73] xl:block">
@@ -129,6 +156,7 @@ export const OverviewPanel = memo(function OverviewPanel({ dashboard }: Overview
             </p>
           </div>
         </CardHeader>
+
         <CardContent className="space-y-2.5">
           <div className="grid gap-2.5 md:grid-cols-3">
             {primaryOverviewCards.map((metric) => {
@@ -146,7 +174,9 @@ export const OverviewPanel = memo(function OverviewPanel({ dashboard }: Overview
                       <p className="mt-1 text-[1.42rem] font-black leading-none tracking-tight text-[#102A24] dark:text-[#F0FBF6]">
                         {metric.value}
                       </p>
-                      <p className="mt-1 text-[10px] text-[#9AABA5] dark:text-[#667B73]">{metric.hint}</p>
+                      <p className="mt-1 text-[10px] text-[#9AABA5] dark:text-[#667B73]">
+                        {metric.hint}
+                      </p>
                     </div>
                     <span className="grid h-9 w-9 place-items-center rounded-full border border-[#BDEDDD] bg-[#ECFBF6] text-[#34C79A] shadow-[inset_0_1px_0_rgba(255,255,255,0.76)]">
                       <Icon className="h-[18px] w-[18px]" />
@@ -160,9 +190,14 @@ export const OverviewPanel = memo(function OverviewPanel({ dashboard }: Overview
           <div className="rounded-[1.18rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.84)] px-3.5 py-2.5 shadow-[0_10px_22px_rgba(16,42,36,0.04),inset_0_1px_0_rgba(255,255,255,0.76)] dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)] dark:shadow-[0_12px_24px_rgba(0,0,0,0.22)]">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-[12px] font-semibold text-[#2F4A43] dark:text-[#D5ECE4]">今日任务完成度</p>
+                <p className="text-[12px] font-semibold text-[#2F4A43] dark:text-[#D5ECE4]">
+                  今日任务完成度
+                </p>
                 <p className="mt-1 text-[11px] text-[#71867F] dark:text-[#89A39B]">
-                  签到状态：成功 {checkinCompleted}，跳过 {checkinSkipped}，失败 {checkinFailed}，
+                  {overallProgressHint}
+                </p>
+                <p className="mt-1 text-[11px] text-[#71867F] dark:text-[#89A39B]">
+                  签到状态：已签到 {checkinCompleted}/{checkinDisplayTotal}，异常 {checkinFailed}，待签到 {checkinPending}，
                   用量同步：{usageCoverageCompleted}/{usageDisplayTotal}
                 </p>
               </div>
@@ -171,15 +206,17 @@ export const OverviewPanel = memo(function OverviewPanel({ dashboard }: Overview
                   {overallTaskTotal ? percent(overallProgress) : "0.0%"}
                 </p>
                 <p className="mt-1 text-[11px] text-[#71867F] dark:text-[#89A39B]">
-                  {overallTaskCompleted}/{overallTaskTotal || 0}
+                  {overallTaskCompleted}/{overallTaskTotal || 0} 任务项
                 </p>
               </div>
             </div>
+
             <Progress
               className="mt-2.5 h-2 bg-[#E7F0EC]"
               value={overallProgress}
               indicatorClassName="bg-[linear-gradient(90deg,#34C79A,#7BE3C2)]"
             />
+
             <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[#71867F] dark:text-[#89A39B]">
               <span>自动签到：{getAutoCheckinLabel(autoCheckin?.status)}</span>
               <span>下次执行：{formatCompactTime(autoCheckin?.nextRunAt)}</span>
@@ -193,6 +230,7 @@ export const OverviewPanel = memo(function OverviewPanel({ dashboard }: Overview
                 {autoCheckinExpanded ? "收起明细" : "查看调度详情"}
               </Button>
             </div>
+
             {autoCheckinExpanded ? (
               <div className="mt-2.5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                 <QueueMetaCell
@@ -233,7 +271,6 @@ export const OverviewPanel = memo(function OverviewPanel({ dashboard }: Overview
               );
             })}
           </div>
-
         </CardContent>
       </Card>
     </motion.section>

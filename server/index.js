@@ -3,7 +3,9 @@ import { fileURLToPath } from "node:url";
 import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
+import authRoutes from "./api/auth.js";
 import quotaRoutes from "./api/quota.js";
+import { assertAuthConfig } from "./utils/auth.js";
 import { startAutoCheckinScheduler, stopAutoCheckinScheduler } from "./utils/caowo.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -11,9 +13,11 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
 
 dotenv.config({ path: path.join(projectRoot, ".env") });
+assertAuthConfig();
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
+const host = process.env.HOST || "127.0.0.1";
 
 app.use(
   cors({
@@ -34,6 +38,7 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
+app.use("/api/auth", authRoutes);
 app.use("/api/quota-monitor", quotaRoutes);
 
 const distDir = path.join(projectRoot, "dist");
@@ -54,9 +59,9 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-const server = app.listen(port, () => {
+const server = app.listen(port, host, () => {
   startAutoCheckinScheduler();
-  console.log(`CW-Ops API is running at http://localhost:${port}`);
+  console.log(`CW-Ops API is running at http://${host}:${port}`);
 });
 
 function shutdown() {

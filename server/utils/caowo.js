@@ -2,10 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import axios from "axios";
-import dotenv from "dotenv";
 import { getAccountFilePath, loadAccounts } from "./accountLoader.js";
-
-dotenv.config();
 
 const DEFAULT_QUOTA_PER_UNIT = 500000;
 const DEFAULT_USD_EXCHANGE_RATE = 1;
@@ -20,6 +17,7 @@ const DEFAULT_APP_TIMEZONE = "Asia/Shanghai";
 const DEFAULT_AUTO_CHECKIN_TIME = "00:01";
 const DEFAULT_AUTO_CHECKIN_RETRY_MINUTES = 10;
 const AUTO_CHECKIN_HEARTBEAT_MS = 30_000;
+const TREND_WINDOW_DAYS = 7;
 
 const CHECKIN_INITIAL_DELAY = 2_500;
 const CHECKIN_SUCCESS_STEP = 250;
@@ -444,6 +442,25 @@ function todayRangeSeconds() {
   };
 }
 
+function getRecentDayKeys(windowDays = TREND_WINDOW_DAYS, timeZone = getAppTimeZone()) {
+  const todayParts = getZonedDateParts(new Date(), timeZone);
+  return Array.from({ length: windowDays }, (_, index) =>
+    formatDayKey(getOffsetDayParts(todayParts, index - (windowDays - 1), timeZone))
+  );
+}
+
+function getRecentMonthKeys(windowDays = TREND_WINDOW_DAYS, timeZone = getAppTimeZone()) {
+  const todayParts = getZonedDateParts(new Date(), timeZone);
+  const monthKeys = new Set();
+
+  for (let index = 0; index < windowDays; index += 1) {
+    const dateParts = getOffsetDayParts(todayParts, index - (windowDays - 1), timeZone);
+    monthKeys.add(`${dateParts.year}-${String(dateParts.month).padStart(2, "0")}`);
+  }
+
+  return Array.from(monthKeys);
+}
+
 function passwordHash(password) {
   return crypto.createHash("sha256").update(String(password)).digest("hex");
 }
@@ -456,8 +473,64 @@ function sessionCacheKey(account) {
   return `${account.username}:${passwordHash(account.password)}`;
 }
 
+function loadAccountsWithKeys() {
+  return loadAccounts().map((account) => ({
+    ...account,
+    key: accountCacheKey(account)
+  }));
+}
+
+function buildAccountKeySet(accounts = []) {
+  return new Set(accounts.map((account) => account.key || accountCacheKey(account)));
+}
+
+function pruneRuntimeCaches(accounts = []) {
+  const activeKeys = buildAccountKeySet(accounts);
+
+  for (const key of sessionCache.keys()) {
+    if (!activeKeys.has(key)) {
+      sessionCache.delete(key);
+    }
+  }
+
+  for (const key of accountStateCache.keys()) {
+    if (!activeKeys.has(key)) {
+      accountStateCache.delete(key);
+    }
+  }
+}
+
 function hasSessionAuth(session) {
   return Boolean(session?.token || session?.cookie);
+}
+
+function pruneSessionStore(store = {}, accounts = loadAccountsWithKeys()) {
+  const activeKeys = buildAccountKeySet(accounts);
+  const nextStore = {};
+
+  for (const key of activeKeys) {
+    const session = store?.[key];
+    if (!session || !hasSessionAuth(session) || session.expiresAt <= Date.now()) {
+      continue;
+    }
+    nextStore[key] = session;
+  }
+
+  return nextStore;
+}
+
+function syncSessionStoreFile(accounts = loadAccountsWithKeys()) {
+  try {
+    const filePath = getSessionStorePath();
+    if (!fs.existsSync(filePath)) return;
+    const rawStore = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const nextStore = pruneSessionStore(rawStore, accounts);
+    if (JSON.stringify(rawStore) !== JSON.stringify(nextStore)) {
+      fs.writeFileSync(filePath, JSON.stringify(nextStore), "utf8");
+    }
+  } catch {
+    // Session persistence is only an optimization.
+  }
 }
 
 function invalidateSession(account) {
@@ -475,7 +548,12 @@ function readSessionStore() {
   try {
     const filePath = getSessionStorePath();
     if (!fs.existsSync(filePath)) return {};
-    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const rawStore = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const nextStore = pruneSessionStore(rawStore);
+    if (JSON.stringify(rawStore) !== JSON.stringify(nextStore)) {
+      writeSessionStore(nextStore);
+    }
+    return nextStore;
   } catch {
     return {};
   }
@@ -485,7 +563,7 @@ function writeSessionStore(store) {
   try {
     const filePath = getSessionStorePath();
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(store, null, 2), "utf8");
+    fs.writeFileSync(filePath, JSON.stringify(pruneSessionStore(store)), "utf8");
   } catch {
     // Session persistence is only an optimization.
   }
@@ -508,7 +586,7 @@ function writeAutoCheckinStore(store) {
   try {
     const filePath = getAutoCheckinStorePath();
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(store, null, 2), "utf8");
+    fs.writeFileSync(filePath, JSON.stringify(store), "utf8");
   } catch {
     // Auto check-in persistence is best effort.
   }
@@ -742,10 +820,10 @@ class CaowoError extends Error {
 }
 
 function getAccounts() {
-  return loadAccounts().map((account) => ({
-    ...account,
-    key: accountCacheKey(account)
-  }));
+  const accounts = loadAccountsWithKeys();
+  pruneRuntimeCaches(accounts);
+  syncSessionStoreFile(accounts);
+  return accounts;
 }
 
 function getAccountByUsername(username) {
@@ -857,23 +935,6 @@ function updateAccountState(account, updater) {
   return next;
 }
 
-function markTodayUsedPending(account, message = "待同步当日用量") {
-  updateAccountState(account, (state) => {
-    state.usage.status = state.usage.updatedAt ? "stale" : "pending";
-    state.usage.source = state.usage.updatedAt ? "cache" : "pending";
-    state.checkin.message =
-      state.checkin.status === "unknown" ? "等待同步签到状态" : state.checkin.message;
-    state.updatedAt = nowIso();
-    if (!state.usage.updatedAt) {
-      state.usage.value = null;
-    }
-    if (message && state.usage.status === "pending") {
-      state.usage.note = message;
-    }
-    return state;
-  });
-}
-
 function buildAccountView(state) {
   const todayUsedValue = state.usage.value;
   const totalQuota =
@@ -881,7 +942,9 @@ function buildAccountView(state) {
       ? state.totalQuota
       : roundMoney(state.balance + (todayUsedValue ?? 0));
   const remainingQuota =
-    todayUsedValue == null ? totalQuota : roundMoney(Math.max(totalQuota - todayUsedValue, 0));
+    todayUsedValue == null
+      ? roundMoney(state.remainingQuota || state.balance || 0)
+      : roundMoney(Math.max(totalQuota - todayUsedValue, 0));
   const usagePercent =
     todayUsedValue == null || totalQuota <= 0
       ? 0
@@ -894,6 +957,7 @@ function buildAccountView(state) {
     checkinStatus: CHECKIN_STATUSES.has(state.checkin.status) ? state.checkin.status : "unknown",
     checkinMessage: state.checkin.message,
     todayUsed: todayUsedValue,
+    todayUsedRaw: state.raw.todayUsedRaw,
     todayUsedStatus: TODAY_USED_STATUSES.has(state.usage.status) ? state.usage.status : "pending",
     todayUsedUpdatedAt: state.usage.updatedAt,
     totalQuota,
@@ -1091,7 +1155,9 @@ function normalizeCheckinStats(payload = {}) {
   const stats = data.stats && typeof data.stats === "object" ? data.stats : data;
   const records = Array.isArray(stats.records) ? stats.records : [];
   const today = currentDayKey();
-  const todayRecord = records.find((record) => String(record.checkin_date || "") === today);
+  const todayRecord = records.find(
+    (record) => String(record.checkin_date || record.date || "").slice(0, 10) === today
+  );
   const checkedInToday = readPath(stats, [
     "checked_in_today",
     "checkedInToday",
@@ -1110,38 +1176,72 @@ function normalizeCheckinStats(payload = {}) {
       0
     ),
     records: records.map((record) => ({
-      date: String(record.checkin_date || ""),
-      quotaAwarded: toNumber(record.quota_awarded, 0)
+      date: String(record.checkin_date || record.date || ""),
+      quotaAwarded: toNumber(record.quota_awarded ?? record.quotaAwarded, 0)
     }))
   };
 }
 
-async function fetchCheckinStats(session) {
-  const response = await client.get(`/api/user/checkin?month=${currentMonthKey()}`, {
-    headers: sessionHeaders(session)
-  });
+async function fetchTrendCheckinStats(session) {
+  const monthKeys = getRecentMonthKeys();
+  const normalizedResponses = [];
 
-  debugLog("checkin-status", {
-    username: session.username,
-    status: response.status,
-    success: response.data?.success,
-    message: response.data?.message,
-    checkedInToday: response.data?.data?.stats?.checked_in_today
-  });
+  for (const monthKey of monthKeys) {
+    const response = await client.get(`/api/user/checkin?month=${monthKey}`, {
+      headers: sessionHeaders(session)
+    });
 
-  if (response.status === 401 || response.status === 403) {
-    throw new CaowoError("登录已失效，请重新同步", response.status, "AUTH_FAILED");
+    debugLog("checkin-status", {
+      username: session.username,
+      month: monthKey,
+      status: response.status,
+      success: response.data?.success,
+      message: response.data?.message,
+      checkedInToday: response.data?.data?.stats?.checked_in_today
+    });
+
+    if (response.status === 401 || response.status === 403) {
+      throw new CaowoError("登录已失效，请重新同步", response.status, "AUTH_FAILED");
+    }
+    if ([400, 404, 405].includes(response.status)) {
+      continue;
+    }
+
+    assertHttpOk(response, "读取签到状态");
+    if (!isSuccessEnvelope(response.data)) {
+      continue;
+    }
+
+    normalizedResponses.push(normalizeCheckinStats(response.data));
   }
-  if ([400, 404, 405].includes(response.status)) {
+
+  if (!normalizedResponses.length) {
     return null;
   }
 
-  assertHttpOk(response, "读取签到状态");
-  if (!isSuccessEnvelope(response.data)) {
-    return null;
+  const recordsByDay = new Map();
+  for (const stats of normalizedResponses) {
+    for (const record of stats.records || []) {
+      const dayKey = String(record.date || "").slice(0, 10);
+      if (!dayKey) continue;
+      recordsByDay.set(dayKey, toNumber(recordsByDay.get(dayKey), 0) + toNumber(record.quotaAwarded, 0));
+    }
   }
 
-  return normalizeCheckinStats(response.data);
+  const records = getRecentDayKeys()
+    .filter((dayKey) => recordsByDay.has(dayKey))
+    .map((dayKey) => ({
+      date: dayKey,
+      quotaAwarded: recordsByDay.get(dayKey)
+    }));
+  const todayRecord = records.find((record) => record.date === currentDayKey());
+  const latestStats = normalizedResponses[normalizedResponses.length - 1];
+
+  return {
+    signedToday: normalizedResponses.some((stats) => stats.signedToday) || Boolean(todayRecord),
+    rewardRaw: toNumber(todayRecord?.quotaAwarded, latestStats?.rewardRaw ?? 0),
+    records
+  };
 }
 
 function sumArrayQuota(rows) {
@@ -1291,29 +1391,6 @@ function markUsageStale(account) {
   });
 }
 
-async function syncCheckinStatusOnly(account) {
-  if (isCoolingDown()) {
-    throw new CaowoError(cooldownMessage(), 429, "RATE_LIMIT_COOLDOWN");
-  }
-
-  await fetchSiteStatus();
-  return withAccountSession(account, async (session) => {
-    const checkinStats = await fetchCheckinStats(session);
-    updateAccountState(account, (state) => {
-      if (session.displayName) state.displayName = session.displayName;
-      state.currencySymbol = siteRates.currencySymbol;
-      if (checkinStats) {
-        applyCheckinStats(state, checkinStats, "remote");
-      } else if (state.checkin.status === "unknown") {
-        state.checkin.message = "等待同步签到状态";
-      }
-      state.updatedAt = nowIso();
-      return state;
-    });
-    return getAccountState(account);
-  });
-}
-
 async function syncAccountUsage(account) {
   if (isCoolingDown()) {
     throw new CaowoError(cooldownMessage(), 429, "RATE_LIMIT_COOLDOWN");
@@ -1322,7 +1399,7 @@ async function syncAccountUsage(account) {
   await fetchSiteStatus();
   return withAccountSession(account, async (session) => {
     const user = await fetchSelf(session);
-    const checkinStats = await fetchCheckinStats(session);
+    const checkinStats = await fetchTrendCheckinStats(session);
     const usageStats = await fetchTodayUsageStats(session);
 
     updateAccountState(account, (state) => {
@@ -2014,6 +2091,9 @@ function buildSummary(accounts) {
       accounts.reduce((sum, account) => sum + account.lastCheckinReward, 0)
     ),
     totalBalance: roundMoney(accounts.reduce((sum, account) => sum + account.balance, 0)),
+    todayUsedRawTotal: Math.round(
+      syncedAccounts.reduce((sum, account) => sum + (account.todayUsedRaw ?? 0), 0)
+    ),
     todayUsed: roundMoney(
       syncedAccounts.reduce((sum, account) => sum + (account.todayUsed ?? 0), 0)
     ),
@@ -2036,8 +2116,12 @@ function buildSummary(accounts) {
 function buildTrend(accounts) {
   const timeZone = getAppTimeZone();
   const todayParts = getZonedDateParts(new Date(), timeZone);
-  return Array.from({ length: 7 }).map((_, index) => {
-    const dateParts = getOffsetDayParts(todayParts, index - 6, timeZone);
+  const syncedAccounts = accounts.filter(
+    (account) => account.todayUsedStatus === "exact" || account.todayUsedStatus === "stale"
+  );
+
+  return Array.from({ length: TREND_WINDOW_DAYS }).map((_, index) => {
+    const dateParts = getOffsetDayParts(todayParts, index - (TREND_WINDOW_DAYS - 1), timeZone);
     const label = `${dateParts.month}/${dateParts.day}`;
     const dayKey = formatDayKey(dateParts);
     const checkinIncome = getAccounts().reduce((sum, account) => {
@@ -2053,11 +2137,11 @@ function buildTrend(accounts) {
       date: label,
       checkinIncome: roundMoney(checkinIncome),
       usedQuota:
-        index === 6
+        index === TREND_WINDOW_DAYS - 1 && syncedAccounts.length
           ? roundMoney(
-              accounts.reduce((sum, account) => sum + (account.todayUsed ?? 0), 0)
+              syncedAccounts.reduce((sum, account) => sum + (account.todayUsed ?? 0), 0)
             )
-          : 0
+          : null
     };
   });
 }

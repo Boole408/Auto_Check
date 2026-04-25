@@ -19,6 +19,7 @@ export const EXTRA_FILTERS = FILTERS.filter((item) => item.key === "checked");
 export function getCheckinBadge(account: AccountQuota) {
   const className =
     "rounded-full px-2.5 py-0.5 text-[11px] font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.82)]";
+
   if (account.signedToday) {
     return (
       <Badge
@@ -29,6 +30,7 @@ export function getCheckinBadge(account: AccountQuota) {
       </Badge>
     );
   }
+
   if (account.checkinStatus === "failed") {
     return (
       <Badge
@@ -39,6 +41,7 @@ export function getCheckinBadge(account: AccountQuota) {
       </Badge>
     );
   }
+
   if (account.checkinStatus === "unknown") {
     return (
       <Badge
@@ -52,6 +55,7 @@ export function getCheckinBadge(account: AccountQuota) {
       </Badge>
     );
   }
+
   return (
     <Badge
       variant="warning"
@@ -94,8 +98,8 @@ export function getTodayUsedBadge(status: TodayUsedStatus) {
     default:
       return (
         <Badge
-          variant="warning"
-          className="rounded-full border-amber-500/16 bg-[rgba(227,212,176,0.84)] px-2.5 py-0.5 text-[11px] font-semibold text-amber-800 shadow-[inset_0_1px_0_rgba(245,239,226,0.4)]"
+          variant="secondary"
+          className="rounded-full border-[#B9E3EA] bg-[#EAF8FB] px-2.5 py-0.5 text-[11px] font-semibold text-[#0F6E86] shadow-[inset_0_1px_0_rgba(255,255,255,0.54)] dark:border-[#305461] dark:bg-[#13242A] dark:text-[#7CD6E7]"
         >
           待同步
         </Badge>
@@ -124,7 +128,9 @@ export const QueueMetaCell = memo(function QueueMetaCell({
       )}
     >
       <p className="text-[11px] font-semibold tracking-[0.08em] text-muted-foreground">{label}</p>
-      <div className={cn("mt-1.5 text-sm font-semibold text-foreground/90", valueClassName)}>{value}</div>
+      <div className={cn("mt-1.5 text-sm font-semibold text-foreground/90", valueClassName)}>
+        {value}
+      </div>
     </div>
   );
 });

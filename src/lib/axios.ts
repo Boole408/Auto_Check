@@ -15,6 +15,7 @@ export class ApiError extends Error {
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
+  withCredentials: true,
   headers: {
     "Content-Type": "application/json"
   }
@@ -40,6 +41,17 @@ apiClient.interceptors.response.use(
       method: error.config?.method,
       message
     });
+
+    const requestUrl = error.config?.url || "";
+    const shouldBroadcastAuthExpired =
+      status === 401 &&
+      typeof window !== "undefined" &&
+      !requestUrl.includes("/api/auth/session") &&
+      !requestUrl.includes("/api/auth/login");
+
+    if (shouldBroadcastAuthExpired) {
+      window.dispatchEvent(new CustomEvent("cw-auth-expired"));
+    }
 
     return Promise.reject(new ApiError(message, status));
   }

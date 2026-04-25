@@ -1,5 +1,6 @@
 import express from "express";
 import { loadAccounts, parseAccountsContent, saveAccounts } from "../utils/accountLoader.js";
+import { requireAuth } from "../utils/auth.js";
 import {
   checkinAccount,
   clearDashboardCache,
@@ -21,6 +22,8 @@ function sendEmptyAccounts(res) {
     data: null
   });
 }
+
+router.use(requireAuth);
 
 router.get("/", async (req, res, next) => {
   try {
