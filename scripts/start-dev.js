@@ -35,7 +35,7 @@ function run(command, args) {
   });
 }
 
-function checkPortAvailable(port, host = "127.0.0.1") {
+function checkPortAvailable(port, host) {
   return new Promise((resolve) => {
     const server = net.createServer();
 
@@ -47,11 +47,16 @@ function checkPortAvailable(port, host = "127.0.0.1") {
       server.close(() => resolve(true));
     });
 
-    server.listen(port, host);
+    if (host) {
+      server.listen(port, host);
+      return;
+    }
+
+    server.listen(port);
   });
 }
 
-async function findAvailablePort(startPort, host = "127.0.0.1") {
+async function findAvailablePort(startPort, host) {
   let port = startPort;
 
   while (!(await checkPortAvailable(port, host))) {
