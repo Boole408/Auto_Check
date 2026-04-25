@@ -71,6 +71,8 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
   const currencySymbol = dashboard?.currencySymbol || dashboard?.accounts[0]?.currencySymbol || "楼";
   const analysisMeta = ANALYSIS_TABS.find((item) => item.key === analysisTab) ?? ANALYSIS_TABS[0];
   const chartGridStroke = darkMode ? "#1F322C" : "#E8F0EC";
+  const chartMargin = { top: 14, right: 8, left: -18, bottom: 6 };
+  const chartAxisTickStyle = { fontSize: 10, fill: "hsl(var(--muted-foreground))" };
   const chartTooltipStyle = darkMode
     ? {
         borderRadius: "14px",
@@ -146,14 +148,13 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
             )}
           </div>
 
-          <div className="h-[260px] min-h-[260px] w-full flex-1 rounded-[1.08rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.82)] p-2 dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)]">
+          <div className="h-[260px] min-h-[260px] w-full flex-1 rounded-[1.08rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.82)] px-2 pt-3 pb-1.5 dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)]">
             {analysisTab === "comparison" ? (
-              
-                <ResponsiveContainer width="100%" height={260}>
-                <BarChart data={comparisonData} barGap={8} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={comparisonData} barGap={8} margin={chartMargin}>
                   <CartesianGrid stroke={chartGridStroke} strokeOpacity={1} vertical={false} />
-                  <XAxis dataKey="name" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
-                  <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                  <XAxis dataKey="name" tick={chartAxisTickStyle} tickMargin={10} height={26} />
+                  <YAxis tick={chartAxisTickStyle} />
                   <Tooltip
                     content={({ active, payload, label }) => {
                       if (!active || !payload?.length) return null;
@@ -203,16 +204,14 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
                   />
                 </BarChart>
               </ResponsiveContainer>
-              
             ) : null}
 
             {analysisTab === "checkinTrend" ? (
-              
-                <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={trendData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={trendData} margin={chartMargin}>
                   <CartesianGrid stroke={chartGridStroke} strokeOpacity={1} vertical={false} />
-                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
-                  <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                  <XAxis dataKey="date" tick={chartAxisTickStyle} tickMargin={10} height={26} />
+                  <YAxis tick={chartAxisTickStyle} />
                   <Tooltip
                     formatter={(value) => money(Number(value ?? 0), currencySymbol)}
                     contentStyle={chartTooltipStyle}
@@ -228,16 +227,14 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
                   />
                 </LineChart>
               </ResponsiveContainer>
-              
             ) : null}
 
             {analysisTab === "usageTrend" ? (
-              
-                <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={trendData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={trendData} margin={chartMargin}>
                   <CartesianGrid stroke={chartGridStroke} strokeOpacity={1} vertical={false} />
-                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
-                  <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                  <XAxis dataKey="date" tick={chartAxisTickStyle} tickMargin={10} height={26} />
+                  <YAxis tick={chartAxisTickStyle} />
                   <Tooltip
                     formatter={(value) => money(Number(value ?? 0), currencySymbol)}
                     contentStyle={chartTooltipStyle}
@@ -253,7 +250,6 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
                   />
                 </LineChart>
               </ResponsiveContainer>
-              
             ) : null}
           </div>
         </CardContent>
