@@ -18,6 +18,12 @@ assertAuthConfig();
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "127.0.0.1";
+const trustProxy = process.env.TRUST_PROXY;
+
+if (trustProxy) {
+  const numericTrustProxy = Number(trustProxy);
+  app.set("trust proxy", Number.isFinite(numericTrustProxy) ? numericTrustProxy : trustProxy);
+}
 
 app.use(
   cors({

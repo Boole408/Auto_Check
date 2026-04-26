@@ -1,0 +1,20 @@
+[Unit]
+Description=Auto_CW web application
+After=network.target
+
+[Service]
+Type=simple
+User=auto-cw
+Group=auto-cw
+WorkingDirectory=/opt/auto-cw/app
+EnvironmentFile=/opt/auto-cw/app/.env
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
