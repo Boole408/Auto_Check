@@ -52,6 +52,7 @@ require_repo_root() {
     "package.json"
     "package-lock.json"
     "server/index.js"
+    "dist/index.html"
     "deploy/.env.production.example"
     "deploy/auto-cw.service"
     "deploy/autocw.ccwu.cc.nginx.conf"
@@ -149,7 +150,7 @@ set_env_value() {
 install_system_packages() {
   step "Installing system packages"
   run_root apt-get update
-  run_root apt-get install -y curl ca-certificates gnupg git nginx certbot python3-certbot-nginx build-essential
+  run_root apt-get install -y curl ca-certificates gnupg git nginx certbot python3-certbot-nginx
 
   if ! command -v node >/dev/null 2>&1 || ! node -v | grep -q '^v20\.'; then
     step "Installing Node.js 20"
@@ -194,12 +195,9 @@ configure_environment() {
   rm -f "${temp_env}"
 }
 
-build_application() {
-  step "Installing dependencies"
-  run_as_app_user "cd '${APP_DIR}' && npm ci"
-
-  step "Building production bundle"
-  run_as_app_user "cd '${APP_DIR}' && npm run build"
+install_runtime_dependencies() {
+  step "Installing runtime dependencies"
+  run_as_app_user "cd '${APP_DIR}' && npm ci --omit=dev"
 }
 
 install_systemd_service() {
@@ -288,7 +286,7 @@ main() {
   bash "${PROJECT_ROOT}/deploy/setup-swap.sh"
   prepare_directories
   configure_environment
-  build_application
+  install_runtime_dependencies
   install_systemd_service
   install_nginx_config
   verify_deployment

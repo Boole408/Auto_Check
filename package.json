@@ -9,6 +9,7 @@
     "server": "node server/index.js",
     "client": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:release": "npm run build && node scripts/prepare-release.js",
     "preview": "vite preview"
   },
   "dependencies": {

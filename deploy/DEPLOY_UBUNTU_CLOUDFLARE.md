@@ -7,6 +7,7 @@ This directory contains the production deployment assets for `autocw.ccwu.cc`.
 - Cloudflare proxy enabled
 - Ubuntu 22.04 or 24.04
 - Node.js 20
+- Local build + server runtime install
 - Nginx + systemd
 - App listens on `127.0.0.1:3000`
 - Public entrypoint is `https://autocw.ccwu.cc`
@@ -17,25 +18,40 @@ This directory contains the production deployment assets for `autocw.ccwu.cc`.
 - `deploy/auto-cw.service`: `systemd` unit
 - `deploy/autocw.ccwu.cc.nginx.conf`: final Nginx site config
 - `deploy/setup-swap.sh`: swap helper for low-memory servers
-- `deploy/install-ubuntu.sh`: end-to-end Ubuntu installer
+- `deploy/install-ubuntu.sh`: Ubuntu runtime installer
+- `scripts/prepare-release.js`: local release bundle generator
+
+## Local release build
+
+Build the frontend and prepare a release directory on your local machine:
+
+```bash
+npm ci
+npm run build:release
+```
+
+The generated bundle will be placed at:
+
+```text
+.release/app
+```
+
+Upload that directory to the server so it becomes `/opt/auto-cw/app`.
+
+Example with `scp`:
+
+```bash
+scp -r .release/app/. deployer@38.55.146.171:/opt/auto-cw/app/
+```
+
+If `/opt/auto-cw/app` already contains an older release, replace its contents with the new bundle before running the installer or restarting the service.
 
 ## Server preparation
 
 1. In Cloudflare, create an `A` record for `autocw.ccwu.cc` that points to `38.55.146.171`.
 2. Keep the record proxied.
 3. Set Cloudflare SSL mode to `Full (strict)`.
-4. Clone the repository on the server to `/opt/auto-cw/app`.
-
-Example:
-
-```bash
-sudo mkdir -p /opt/auto-cw
-sudo chown "$USER":"$USER" /opt/auto-cw
-git clone <your-private-repo-url> /opt/auto-cw/app
-cd /opt/auto-cw/app
-```
-
-If the repository is private, configure an SSH deploy key or a GitHub token before cloning.
+4. Create `/opt/auto-cw/app` on the server and upload the local release bundle there.
 
 ## Install
 
@@ -47,12 +63,12 @@ bash deploy/install-ubuntu.sh
 
 The installer will:
 
-- install Node.js 20, Nginx, Certbot, Git, and build prerequisites
+- install Node.js 20, Nginx, Certbot, and Git
 - create the `auto-cw` runtime user
 - provision swap on low-memory hosts when needed
 - create `/var/lib/auto-cw/accounts.txt`
 - generate `/opt/auto-cw/app/.env`
-- run `npm ci` and `npm run build`
+- run `npm ci --omit=dev`
 - install `auto-cw.service`
 - request an HTTPS certificate for `autocw.ccwu.cc`
 - install and reload the Nginx site
@@ -70,11 +86,11 @@ sudo journalctl -u auto-cw.service -n 100 --no-pager
 
 ```bash
 cd /opt/auto-cw/app
-git pull --ff-only
-npm ci
-npm run build
+npm ci --omit=dev
 sudo systemctl restart auto-cw.service
 ```
+
+Before the commands above, upload the fresh `.release/app` contents from your local machine to `/opt/auto-cw/app`.
 
 ## Notes
 
