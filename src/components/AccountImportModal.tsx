@@ -19,6 +19,7 @@ username,password
 
 interface AccountImportModalProps {
   isOpen: boolean;
+  provider?: string;
   accountFile?: string | null;
   onClose: () => void;
   onSuccess: (result: ImportAccountsResult) => void | Promise<void>;
@@ -27,6 +28,7 @@ interface AccountImportModalProps {
 
 export function AccountImportModal({
   isOpen,
+  provider = "muyuan",
   accountFile,
   onClose,
   onSuccess,
@@ -84,6 +86,7 @@ export function AccountImportModal({
       setImportingAccounts(true);
       const result = await importAccounts({
         content: accountImportDraft,
+        provider,
         format: "auto"
       });
 

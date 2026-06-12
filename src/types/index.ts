@@ -1,3 +1,15 @@
+export interface QuotaProvider {
+  id: string;
+  label: string;
+  displayName?: string;
+  baseUrl: string;
+}
+
+export interface QuotaProvidersResult {
+  defaultProvider: string;
+  providers: QuotaProvider[];
+}
+
 export type CheckinStatus = "checked" | "unchecked" | "failed" | "unknown";
 export type TodayUsedStatus = "exact" | "stale" | "pending" | "unavailable";
 export type QueueLifecycleStatus = "idle" | "running" | "cooldown" | "paused" | "completed";
@@ -60,6 +72,8 @@ export interface AccountDataSource {
 export interface AccountQuota {
   username: string;
   displayName: string;
+  apiKey?: string;
+  apiKeyUpdatedAt?: string | null;
   signedToday: boolean;
   checkinStatus: CheckinStatus;
   checkinMessage: string;
@@ -70,6 +84,7 @@ export interface AccountQuota {
   totalQuota: number;
   remainingQuota: number;
   balance: number;
+  usedQuota?: number;
   usagePercent: number;
   lastCheckinReward: number;
   currencySymbol: string;
@@ -98,6 +113,7 @@ export interface DashboardAlert {
 export interface QuotaSummary {
   todayCheckinIncome: number;
   totalBalance: number;
+  totalQuota: number;
   todayUsedRawTotal: number;
   todayUsed: number;
   todayRemaining: number;
@@ -122,6 +138,7 @@ export interface QuotaDashboard {
   currencySymbol: string;
   errors: string[];
   accountFile: string;
+  provider?: QuotaProvider;
   sync: SyncState;
 }
 

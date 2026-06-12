@@ -34,7 +34,8 @@ import {
 } from "@/features/quota-monitor/context/QuotaMonitorActionContext";
 import {
   useForceRefreshQuota,
-  useQuotaData
+  useQuotaData,
+  useQuotaProviders
 } from "@/features/quota-monitor/hooks/useQuotaData";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -139,6 +140,7 @@ export default function QuotaMonitorPage({
   onLogout
 }: QuotaMonitorPageProps) {
   const MANUAL_REFRESH_MIN_SPIN_MS = 850;
+  const [selectedProvider, setSelectedProvider] = useState("muyuan");
   const [selectedUsername, setSelectedUsername] = useState("");
   const [filter, setFilter] = useState<AccountFilter>("all");
   const [manualRefreshing, setManualRefreshing] = useState(false);
@@ -147,16 +149,32 @@ export default function QuotaMonitorPage({
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("cw-theme") === "dark");
   const [importModalOpen, setImportModalOpen] = useState(false);
   const {
+    data: providerConfig
+  } = useQuotaProviders();
+  const providers = providerConfig?.providers ?? [
+    { id: "muyuan", label: "MUYUAN", baseUrl: "" },
+    { id: "xem8k5", label: "XEM8K5", baseUrl: "" },
+    { id: "dgbmc", label: "DGBMC", baseUrl: "" },
+    { id: "jiuuij", label: "JIUUIJ", displayName: "Joverna", baseUrl: "" }
+  ];
+  const {
     data: dashboard,
     error: quotaError,
     isLoading: loading,
     isFetching: refreshing,
     refetch: refetchQuotaData
-  } = useQuotaData(selectedUsername);
+  } = useQuotaData(selectedProvider, selectedUsername);
   const {
     mutateAsync: forceRefreshQuota,
     isPending: isForceRefreshPending
-  } = useForceRefreshQuota(selectedUsername);
+  } = useForceRefreshQuota(selectedProvider, selectedUsername);
+
+  const handleProviderChange = useCallback((provider: string) => {
+    setSelectedProvider(provider);
+    setSelectedUsername("");
+    setFilter("all");
+    setNotice("");
+  }, []);
 
   useEffect(() => {
     if (quotaError instanceof ApiError) {
@@ -171,6 +189,7 @@ export default function QuotaMonitorPage({
 
   useEffect(() => {
     if (!dashboard) return;
+    if (dashboard.provider?.id && dashboard.provider.id !== selectedProvider) return;
 
     if (dashboard.accounts.length === 0) {
       if (selectedUsername) {
@@ -182,7 +201,7 @@ export default function QuotaMonitorPage({
     if (!selectedUsername || !dashboard.accounts.some((account) => account.username === selectedUsername)) {
       setSelectedUsername(dashboard.accounts[0]?.username ?? "");
     }
-  }, [dashboard, selectedUsername]);
+  }, [dashboard, selectedProvider, selectedUsername]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
@@ -311,7 +330,7 @@ export default function QuotaMonitorPage({
   );
 
   return (
-    <QuotaMonitorActionProvider onNotice={setNotice}>
+    <QuotaMonitorActionProvider provider={selectedProvider} onNotice={setNotice}>
       <main className="quota-monitor-page relative min-h-screen overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_20%_0%,rgba(52,199,154,0.08),transparent_26%),linear-gradient(180deg,#F8FCFA_0%,#F3F8F5_100%)] text-foreground dark:bg-[radial-gradient(circle_at_20%_0%,rgba(52,199,154,0.12),transparent_24%),linear-gradient(180deg,#0D1714_0%,#111D19_100%)]">
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <div className="absolute left-[-7rem] top-[-7rem] h-64 w-64 rounded-full bg-[#DDF8EE]/14 blur-[100px] dark:bg-[#1D4436]/28" />
@@ -348,12 +367,16 @@ export default function QuotaMonitorPage({
               </div>
 
               <div className="min-w-[144px]">
-                <Select value="caowo" onValueChange={() => undefined}>
+                <Select value={selectedProvider} onValueChange={handleProviderChange}>
                   <SelectTrigger className="h-9 rounded-full border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] px-4 text-left text-xs font-medium shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:border-[#294038] dark:bg-[rgba(19,31,27,0.9)] dark:text-[#E7F7F0]">
                     <SelectValue placeholder="Provider" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="caowo">CAOWO</SelectItem>
+                    {providers.map((provider) => (
+                      <SelectItem key={provider.id} value={provider.id}>
+                        {provider.label || provider.id}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -466,6 +489,7 @@ export default function QuotaMonitorPage({
 
       <AccountImportModal
         isOpen={importModalOpen}
+        provider={selectedProvider}
         accountFile={dashboard?.accountFile}
         onClose={() => setImportModalOpen(false)}
         onSuccess={handleImportSuccess}

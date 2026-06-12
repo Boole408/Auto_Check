@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Activity, CheckCircle2, Clock3, LoaderCircle, RefreshCw } from "lucide-react";
+import { Activity, Check, CheckCircle2, Clock3, Copy, KeyRound, LoaderCircle, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -50,6 +50,7 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
 }: AccountDetailPanelProps) {
   const { handleSingleCheckin, workingAccount } = useQuotaMonitorActions();
   const [expandedDetailUsername, setExpandedDetailUsername] = useState<string | null>(null);
+  const [copiedApiKey, setCopiedApiKey] = useState(false);
 
   const selectedAccount = useMemo(() => {
     if (!dashboard?.accounts.length) return null;
@@ -62,6 +63,14 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
     selectedAccount != null && expandedDetailUsername === selectedAccount.username;
 
   const selectedUsageTone = usageTone(selectedAccount?.usagePercent ?? 0);
+  const selectedApiKey = selectedAccount?.apiKey?.trim();
+  const handleCopyApiKey = async () => {
+    if (!selectedApiKey) return;
+
+    await navigator.clipboard.writeText(selectedApiKey);
+    setCopiedApiKey(true);
+    window.setTimeout(() => setCopiedApiKey(false), 1400);
+  };
   const selectedAccountMetrics = selectedAccount
     ? [
         {
@@ -84,10 +93,17 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
   const selectedAccountCoreFields = selectedAccount
     ? [
         {
-          label: "签到状态",
-          value: getCheckinStatusText(selectedAccount),
-          hint: selectedAccount.checkinMessage,
-          icon: CheckCircle2
+          label: "API Key",
+          value: selectedApiKey || "待同步",
+          hint: selectedApiKey
+            ? `同步于 ${formatTime(selectedAccount.apiKeyUpdatedAt)}`
+            : selectedAccount.apiKeyUpdatedAt
+              ? "当前账号未配置可用 key"
+              : "等待后台同步当前账号 key",
+          icon: KeyRound,
+          valueClassName: selectedApiKey
+            ? "break-all font-mono text-[0.72rem] leading-relaxed"
+            : ""
         },
         {
           label: "用量同步",
@@ -217,15 +233,19 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
               <div className="grid auto-rows-fr gap-2 sm:grid-cols-2">
                 {selectedAccountCoreFields.map((field) => {
                   const Icon = field.icon;
+                  const isApiKeyField = field.label === "API Key";
+                  const valueClassName = "valueClassName" in field ? field.valueClassName : "";
                   return (
                     <div
                       key={field.label}
-                      className="min-h-[94px] rounded-[0.96rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.84)] px-3.5 py-2.5 shadow-[0_10px_18px_rgba(16,42,36,0.05)] dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)] dark:shadow-[0_12px_18px_rgba(0,0,0,0.22)]"
+                      className={`relative min-h-[94px] rounded-[0.96rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.84)] px-3.5 py-2.5 shadow-[0_10px_18px_rgba(16,42,36,0.05)] dark:border-[#294038] dark:bg-[rgba(20,31,27,0.84)] dark:shadow-[0_12px_18px_rgba(0,0,0,0.22)] ${
+                        isApiKeyField && selectedApiKey ? "pb-10" : ""
+                      }`}
                     >
                       <div className="flex h-full min-w-0 items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1">
+                        <div className={`min-w-0 flex-1 ${isApiKeyField && selectedApiKey ? "pr-2" : ""}`}>
                           <p className="text-[11px] text-[#71867F] dark:text-[#89A39B]">{field.label}</p>
-                          <p className="mt-1 break-words text-[0.95rem] font-semibold leading-snug text-[#102A24] dark:text-[#E7F7F0]">
+                          <p className={`mt-1 break-words text-[0.95rem] font-semibold leading-snug text-[#102A24] dark:text-[#E7F7F0] ${valueClassName}`}>
                             {field.value}
                           </p>
                           <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-[#9AABA5] dark:text-[#667B73]">
@@ -236,6 +256,17 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
                           <Icon className="h-4 w-4" />
                         </span>
                       </div>
+                      {isApiKeyField && selectedApiKey ? (
+                        <button
+                          type="button"
+                          className="absolute bottom-2.5 right-3 grid h-7 w-7 place-items-center rounded-full border border-[#BDEDDD] bg-[#ECFBF6] text-[#1E7E63] shadow-[0_6px_12px_rgba(16,42,36,0.08)] transition hover:-translate-y-0.5 hover:bg-white hover:text-[#15956F] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34C79A]/50 dark:border-[#31534A] dark:bg-[#172E27] dark:text-[#7FE0BE] dark:hover:bg-[#1F3A32]"
+                          onClick={() => void handleCopyApiKey()}
+                          aria-label={copiedApiKey ? "API Key 已复制" : "复制 API Key"}
+                          title={copiedApiKey ? "已复制" : "复制 API Key"}
+                        >
+                          {copiedApiKey ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                        </button>
+                      ) : null}
                     </div>
                   );
                 })}

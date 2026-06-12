@@ -5,8 +5,8 @@ function getDefaultAccountFile() {
   return path.resolve(process.cwd(), "accounts.txt");
 }
 
-export function getAccountFilePath() {
-  return process.env.CAOWO_ACCOUNTS_FILE || getDefaultAccountFile();
+export function getAccountFilePath(accountFile = null) {
+  return accountFile || process.env.MUYUAN_ACCOUNTS_FILE || process.env.CAOWO_ACCOUNTS_FILE || getDefaultAccountFile();
 }
 
 function cleanValue(value = "") {
@@ -16,24 +16,36 @@ function cleanValue(value = "") {
 function parseKeyValueLine(line) {
   const normalized = line
     .replace(/，/g, ",")
+    .replace(/；/g, ";")
     .replace(/：/g, ":")
     .replace(/\s+/g, " ")
     .trim();
 
-  const usernameMatch = normalized.match(/(?:账号|用户名|username|user)\s*[:=]\s*([^,;，；]+)/i);
-  const passwordMatch = normalized.match(/(?:密码|password|pass)\s*[:=]\s*([^,;，；]+)/i);
+  const usernameMatch = normalized.match(
+    /(?:账号|用户名|username|user)\s*[:=]\s*(.*?)(?=\s*(?:密码|password|pass)\s*[:=]|[,;]|$)/i
+  );
+  const passwordMatch = normalized.match(/(?:密码|password|pass)\s*[:=]\s*([^,;]+)/i);
 
-  if (!usernameMatch || !passwordMatch) return null;
+  if (usernameMatch && passwordMatch) {
+    return {
+      username: cleanValue(usernameMatch[1]),
+      password: cleanValue(passwordMatch[1])
+    };
+  }
+
+  const compactPasswordMatch = normalized.match(/^(.+?)\s*(?:密码|password|pass)\s*[:=]\s*([^,;]+)/i);
+  if (!compactPasswordMatch) return null;
 
   return {
-    username: cleanValue(usernameMatch[1]),
-    password: cleanValue(passwordMatch[1])
+    username: cleanValue(compactPasswordMatch[1]),
+    password: cleanValue(compactPasswordMatch[2])
   };
 }
 
 function parseCsvLine(line) {
   const parts = line
     .replace(/，/g, ",")
+    .replace(/；/g, ";")
     .split(",")
     .map((part) => cleanValue(part));
 
@@ -134,9 +146,9 @@ export function parseAccountsContent(content, format = "auto") {
   return parseTextAccounts(source);
 }
 
-export function saveAccounts(accounts) {
+export function saveAccounts(accounts, accountFileOverride = null) {
   const normalized = dedupeAccounts(accounts.map((account) => normalizeAccountRecord(account)).filter(Boolean));
-  const accountFile = getAccountFilePath();
+  const accountFile = getAccountFilePath(accountFileOverride);
   fs.mkdirSync(path.dirname(accountFile), { recursive: true });
   fs.writeFileSync(
     accountFile,
@@ -151,8 +163,8 @@ export function saveAccounts(accounts) {
   };
 }
 
-export function loadAccounts() {
-  const accountFile = getAccountFilePath();
+export function loadAccounts(accountFileOverride = null) {
+  const accountFile = getAccountFilePath(accountFileOverride);
 
   if (!fs.existsSync(accountFile)) {
     return [];

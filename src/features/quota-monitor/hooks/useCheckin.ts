@@ -7,6 +7,7 @@ import { quotaMonitorQueryKey } from "@/features/quota-monitor/hooks/useQuotaDat
 import type { AccountQuota, CheckinScope } from "@/types";
 
 interface UseCheckinOptions {
+  provider?: string;
   onNotice?: (message: string) => void;
 }
 
@@ -22,15 +23,15 @@ function getCheckinErrorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
-export function useCheckin({ onNotice }: UseCheckinOptions = {}) {
+export function useCheckin({ provider = "muyuan", onNotice }: UseCheckinOptions = {}) {
   const queryClient = useQueryClient();
 
   const invalidateQuotaMonitor = useCallback(
     async () =>
       queryClient.invalidateQueries({
-        queryKey: quotaMonitorQueryKey()
+        queryKey: quotaMonitorQueryKey(provider)
       }),
-    [queryClient]
+    [provider, queryClient]
   );
 
   const {
@@ -38,7 +39,7 @@ export function useCheckin({ onNotice }: UseCheckinOptions = {}) {
     isPending: isSingleCheckinPending,
     variables: singleCheckinVariables
   } = useMutation({
-    mutationFn: (username: string) => checkinAccount(username),
+    mutationFn: (username: string) => checkinAccount(username, provider),
     onSuccess: async (result) => {
       onNotice?.(result.message || "签到成功");
       await invalidateQuotaMonitor();
@@ -53,7 +54,7 @@ export function useCheckin({ onNotice }: UseCheckinOptions = {}) {
     isPending: isCheckinAllPending,
     variables: checkinAllVariables
   } = useMutation({
-    mutationFn: (scope: CheckinScope) => checkinAll(scope),
+    mutationFn: (scope: CheckinScope) => checkinAll(scope, provider),
     onSuccess: async (result) => {
       onNotice?.(result.message);
       await invalidateQuotaMonitor();

@@ -1,9 +1,13 @@
 import { apiClient, unwrapApiEnvelope } from "@/lib/axios";
 import type { ApiEnvelope, CheckinResult, ImportAccountsResult } from "@/types";
 
-export async function checkinAccount(username: string) {
+function providerQuery(provider = "muyuan") {
+  return `?provider=${encodeURIComponent(provider)}`;
+}
+
+export async function checkinAccount(username: string, provider = "muyuan") {
   const response = await apiClient.post<ApiEnvelope<CheckinResult>>(
-    `/api/quota-monitor/accounts/${encodeURIComponent(username)}/checkin`
+    `/api/quota-monitor/accounts/${encodeURIComponent(username)}/checkin${providerQuery(provider)}`
   );
 
   return unwrapApiEnvelope(response);
@@ -11,11 +15,15 @@ export async function checkinAccount(username: string) {
 
 export async function importAccounts(payload: {
   content: string;
+  provider?: string;
   format?: "txt" | "json" | "auto";
 }) {
   const response = await apiClient.post<ApiEnvelope<ImportAccountsResult>>(
     "/api/quota-monitor/accounts/import",
-    payload
+    {
+      ...payload,
+      provider: payload.provider || "muyuan"
+    }
   );
 
   return unwrapApiEnvelope(response);

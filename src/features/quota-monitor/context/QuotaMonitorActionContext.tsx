@@ -17,11 +17,13 @@ interface QuotaMonitorActionContextValue {
 const QuotaMonitorActionContext = createContext<QuotaMonitorActionContextValue | null>(null);
 
 interface QuotaMonitorActionProviderProps extends PropsWithChildren {
+  provider?: string;
   onNotice?: (message: string) => void;
 }
 
 export function QuotaMonitorActionProvider({
   children,
+  provider = "muyuan",
   onNotice
 }: QuotaMonitorActionProviderProps) {
   const {
@@ -29,7 +31,7 @@ export function QuotaMonitorActionProvider({
     handleCheckinAll,
     workingAccount,
     workingScope
-  } = useCheckin({ onNotice });
+  } = useCheckin({ provider, onNotice });
 
   const value = useMemo<QuotaMonitorActionContextValue>(
     () => ({

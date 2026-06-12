@@ -7,6 +7,9 @@ APP_USER="auto-cw"
 APP_GROUP="auto-cw"
 DATA_DIR="/var/lib/auto-cw"
 ACCOUNTS_FILE="${DATA_DIR}/accounts.txt"
+XEM8K5_ACCOUNTS_FILE="${DATA_DIR}/accounts.xem8k5.txt"
+DGBMC_ACCOUNTS_FILE="${DATA_DIR}/accounts.dgbmc.txt"
+JIUUIJ_ACCOUNTS_FILE="${DATA_DIR}/accounts.jiuuij.txt"
 ENV_FILE="${APP_DIR}/.env"
 ENV_TEMPLATE="${PROJECT_ROOT}/deploy/.env.production.example"
 SYSTEMD_TEMPLATE="${PROJECT_ROOT}/deploy/auto-cw.service"
@@ -164,12 +167,15 @@ prepare_directories() {
   ensure_user
   run_root install -d -m 755 -o "${APP_USER}" -g "${APP_GROUP}" "${APP_DIR}" "${DATA_DIR}" "${CERTBOT_WEBROOT}"
   run_root install -d -m 755 -o "${APP_USER}" -g "${APP_GROUP}" "${APP_DIR}/.cache"
-  if [[ -f "${ACCOUNTS_FILE}" ]]; then
-    run_root chown "${APP_USER}:${APP_GROUP}" "${ACCOUNTS_FILE}"
-    run_root chmod 600 "${ACCOUNTS_FILE}"
-  else
-    run_root install -m 600 -o "${APP_USER}" -g "${APP_GROUP}" /dev/null "${ACCOUNTS_FILE}"
-  fi
+  local account_file
+  for account_file in "${ACCOUNTS_FILE}" "${XEM8K5_ACCOUNTS_FILE}" "${DGBMC_ACCOUNTS_FILE}" "${JIUUIJ_ACCOUNTS_FILE}"; do
+    if [[ -f "${account_file}" ]]; then
+      run_root chown "${APP_USER}:${APP_GROUP}" "${account_file}"
+      run_root chmod 600 "${account_file}"
+    else
+      run_root install -m 600 -o "${APP_USER}" -g "${APP_GROUP}" /dev/null "${account_file}"
+    fi
+  done
   run_root chown -R "${APP_USER}:${APP_GROUP}" /opt/auto-cw "${DATA_DIR}"
 }
 
@@ -191,6 +197,9 @@ configure_environment() {
   set_env_value "${temp_env}" "APP_LOGIN_PASSWORD" "${login_password}"
   set_env_value "${temp_env}" "APP_LOGIN_SESSION_SECRET" "${session_secret}"
   set_env_value "${temp_env}" "CAOWO_ACCOUNTS_FILE" "${ACCOUNTS_FILE}"
+  set_env_value "${temp_env}" "XEM8K5_ACCOUNTS_FILE" "${XEM8K5_ACCOUNTS_FILE}"
+  set_env_value "${temp_env}" "DGBMC_ACCOUNTS_FILE" "${DGBMC_ACCOUNTS_FILE}"
+  set_env_value "${temp_env}" "JIUUIJ_ACCOUNTS_FILE" "${JIUUIJ_ACCOUNTS_FILE}"
   run_root install -m 600 -o "${APP_USER}" -g "${APP_GROUP}" "${temp_env}" "${ENV_FILE}"
   rm -f "${temp_env}"
 }

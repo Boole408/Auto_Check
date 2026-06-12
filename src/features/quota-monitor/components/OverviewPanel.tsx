@@ -129,11 +129,11 @@ export const OverviewPanel = memo(function OverviewPanel({ dashboard }: Overview
       hint: dashboard ? `覆盖 ${usageCoverageCompleted}/${usageDisplayTotal}` : "等待接口返回"
     },
     {
-      title: "今日剩余额度",
-      value: dashboard ? money(dashboard.summary.todayRemaining, currencySymbol) : "加载中",
+      title: "账号总金额",
+      value: dashboard ? money(dashboard.summary.totalQuota, currencySymbol) : "加载中",
       icon: WalletMinimal,
       hint: dashboard
-        ? `覆盖 ${dashboard.summary.todayRemainingCoverage.exactOrStaleAccounts}/${dashboard.summary.todayRemainingCoverage.totalAccounts}`
+        ? `剩余额度 ${money(dashboard.summary.todayRemaining, currencySymbol)}，覆盖 ${dashboard.summary.todayRemainingCoverage.exactOrStaleAccounts}/${dashboard.summary.todayRemainingCoverage.totalAccounts}`
         : "等待接口返回"
     }
   ];

@@ -3,8 +3,10 @@ import path from "node:path";
 import crypto from "node:crypto";
 import axios from "axios";
 import { getAccountFilePath, loadAccounts } from "./accountLoader.js";
+import { getProviderConfig, getProviderList, normalizeProviderId } from "./siteProviders.js";
 
 const DEFAULT_QUOTA_PER_UNIT = 500000;
+const DEFAULT_QUOTA_UNIT_PRICE = 1;
 const DEFAULT_USD_EXCHANGE_RATE = 1;
 const DEFAULT_CUSTOM_CURRENCY_EXCHANGE_RATE = 1;
 const DEFAULT_CURRENCY_SYMBOL = "¥";
@@ -18,20 +20,25 @@ const DEFAULT_AUTO_CHECKIN_TIME = "00:01";
 const DEFAULT_AUTO_CHECKIN_RETRY_MINUTES = 10;
 const AUTO_CHECKIN_HEARTBEAT_MS = 30_000;
 const TREND_WINDOW_DAYS = 7;
+const USAGE_LOG_PAGE_SIZE = 100;
+const MAX_USAGE_LOG_PAGES = 100;
 
 const CHECKIN_INITIAL_DELAY = 2_500;
 const CHECKIN_SUCCESS_STEP = 250;
 const CHECKIN_FAILURE_STEP = 1_000;
 const CHECKIN_MIN_DELAY = 1_500;
 const CHECKIN_MAX_DELAY = 10_000;
+const CHECKIN_STATUS_SYNC_THROTTLE_MS = 60_000;
+const CHECKIN_STATUS_SYNC_DELAY_MS = 2_000;
 
 const CHECKIN_STATUSES = new Set(["checked", "unchecked", "failed", "unknown"]);
 const TODAY_USED_STATUSES = new Set(["exact", "stale", "pending", "unavailable"]);
 
-const baseURL = process.env.CAOWO_BASE_URL || "https://caowo.xin";
+function createCaowoRuntime(provider) {
+const baseURL = provider.baseUrl;
 const client = axios.create({
   baseURL,
-  timeout: Number(process.env.CAOWO_TIMEOUT_MS || DEFAULT_TIMEOUT),
+  timeout: Number.isFinite(provider.timeoutMs) ? provider.timeoutMs : DEFAULT_TIMEOUT,
   headers: {
     Accept: "application/json",
     "Content-Type": "application/json",
@@ -44,10 +51,14 @@ const sessionCache = new Map();
 const accountStateCache = new Map();
 let dashboardCache = null;
 let dashboardInFlight = null;
+let checkinStatusSyncInFlight = null;
+let lastCheckinStatusSyncAt = 0;
 let siteRates = {
   quotaPerUnit: DEFAULT_QUOTA_PER_UNIT,
+  quotaUnitPrice: DEFAULT_QUOTA_UNIT_PRICE,
   usdExchangeRate: DEFAULT_USD_EXCHANGE_RATE,
   customCurrencyExchangeRate: DEFAULT_CUSTOM_CURRENCY_EXCHANGE_RATE,
+  quotaDisplayType: "USD",
   currencySymbol: DEFAULT_CURRENCY_SYMBOL
 };
 let siteRatesExpiresAt = 0;
@@ -77,7 +88,7 @@ function createCheckinQueueState() {
     cooldownUntil: null,
     message: "等待开始",
     updatedAt: new Date().toISOString(),
-    delayMs: CHECKIN_INITIAL_DELAY,
+    delayMs: getCheckinInitialDelayMs(),
     resumeTimer: null,
     running: false,
     autoResume: false,
@@ -124,7 +135,10 @@ function createAutoCheckinStore() {
     lastTriggeredDay: null,
     lastTriggeredAt: null,
     lastAttemptAt: null,
-    lastErrorMessage: null
+    lastErrorMessage: null,
+    lastCompletedDay: null,
+    lastCompletedAt: null,
+    activeDay: null
   };
 }
 
@@ -190,8 +204,8 @@ function clearSyncTimeoutAlert(username) {
 }
 
 function debugLog(message, payload = {}) {
-  if (process.env.CAOWO_DEBUG === "1") {
-    console.warn(`[caowo-debug] ${message}`, JSON.stringify(payload));
+  if (process.env.CAOWO_DEBUG === "1" || process.env[`${provider.id.toUpperCase()}_DEBUG`] === "1") {
+    console.warn(`[${provider.id}-debug] ${message}`, JSON.stringify(payload));
   }
 }
 
@@ -221,41 +235,100 @@ function normalizeAutoCheckinTime(value) {
 }
 
 function getAppTimeZone() {
-  const configured = process.env.CAOWO_AUTO_CHECKIN_TZ || DEFAULT_APP_TIMEZONE;
+  const configured = provider.autoCheckinTz || DEFAULT_APP_TIMEZONE;
   return isValidTimeZone(configured) ? configured : DEFAULT_APP_TIMEZONE;
 }
 
 function getAutoCheckinConfig() {
   return {
-    enabled: getBooleanEnv("CAOWO_AUTO_CHECKIN_ENABLED", true),
-    time: normalizeAutoCheckinTime(process.env.CAOWO_AUTO_CHECKIN_TIME),
+    enabled: Boolean(provider.autoCheckinEnabled),
+    time: normalizeAutoCheckinTime(provider.autoCheckinTime),
     timezone: getAppTimeZone(),
-    catchUpEnabled: getBooleanEnv("CAOWO_AUTO_CHECKIN_CATCH_UP", true),
-    retryMinutes: Math.max(
-      1,
-      getNumberEnv("CAOWO_AUTO_CHECKIN_RETRY_MINUTES", DEFAULT_AUTO_CHECKIN_RETRY_MINUTES)
-    )
+    catchUpEnabled: Boolean(provider.autoCheckinCatchUp),
+    retryMinutes: Math.max(1, Number(provider.autoCheckinRetryMinutes || DEFAULT_AUTO_CHECKIN_RETRY_MINUTES))
   };
 }
 
 function getDashboardCacheTtl() {
-  return getNumberEnv("CAOWO_CACHE_TTL_MS", DEFAULT_DASHBOARD_CACHE_TTL);
+  return Number.isFinite(provider.cacheTtlMs) ? provider.cacheTtlMs : DEFAULT_DASHBOARD_CACHE_TTL;
 }
 
 function getRateLimitCooldownMs() {
-  return getNumberEnv("CAOWO_RATE_LIMIT_COOLDOWN_MS", DEFAULT_RATE_LIMIT_COOLDOWN);
+  return Number.isFinite(provider.rateLimitCooldownMs)
+    ? provider.rateLimitCooldownMs
+    : DEFAULT_RATE_LIMIT_COOLDOWN;
 }
 
 function getUsageSyncDelayMs() {
-  return getNumberEnv("CAOWO_USAGE_SYNC_DELAY_MS", DEFAULT_USAGE_SYNC_DELAY);
+  return Number.isFinite(provider.usageSyncDelayMs)
+    ? provider.usageSyncDelayMs
+    : DEFAULT_USAGE_SYNC_DELAY;
+}
+
+function getCheckinInitialDelayMs() {
+  return Math.max(
+    0,
+    Number.isFinite(provider.checkinInitialDelayMs)
+      ? provider.checkinInitialDelayMs
+      : CHECKIN_INITIAL_DELAY
+  );
+}
+
+function getCheckinMinDelayMs() {
+  return Math.max(
+    0,
+    Number.isFinite(provider.checkinMinDelayMs) ? provider.checkinMinDelayMs : CHECKIN_MIN_DELAY
+  );
+}
+
+function getCheckinMaxDelayMs() {
+  return Math.max(
+    getCheckinMinDelayMs(),
+    Number.isFinite(provider.checkinMaxDelayMs) ? provider.checkinMaxDelayMs : CHECKIN_MAX_DELAY
+  );
+}
+
+function getCheckinSuccessStepMs() {
+  return Math.max(
+    0,
+    Number.isFinite(provider.checkinSuccessStepMs)
+      ? provider.checkinSuccessStepMs
+      : CHECKIN_SUCCESS_STEP
+  );
+}
+
+function getCheckinFailureStepMs() {
+  return Math.max(
+    0,
+    Number.isFinite(provider.checkinFailureStepMs)
+      ? provider.checkinFailureStepMs
+      : CHECKIN_FAILURE_STEP
+  );
+}
+
+function getCheckinDelayJitterMs() {
+  return Math.max(
+    0,
+    Number.isFinite(provider.checkinDelayJitterMs) ? provider.checkinDelayJitterMs : 0
+  );
+}
+
+function withCheckinDelayJitter(delayMs) {
+  const jitterMs = getCheckinDelayJitterMs();
+  if (!jitterMs) return delayMs;
+  return delayMs + Math.floor(Math.random() * (jitterMs + 1));
 }
 
 function getSessionStorePath() {
-  return path.resolve(process.cwd(), ".cache", "caowo-sessions.json");
+  return path.resolve(process.cwd(), ".cache", `${provider.id}-sessions.json`);
 }
 
 function getAutoCheckinStorePath() {
-  return path.resolve(process.cwd(), ".cache", "caowo-auto-checkin.json");
+  return path.resolve(process.cwd(), ".cache", `${provider.id}-auto-checkin.json`);
+}
+
+function getApiKeyStorePath() {
+  return path.resolve(process.cwd(), ".cache", `${provider.id}-api-keys.json`);
 }
 
 const zonedFormatterCache = new Map();
@@ -474,7 +547,7 @@ function sessionCacheKey(account) {
 }
 
 function loadAccountsWithKeys() {
-  return loadAccounts().map((account) => ({
+  return loadAccounts(provider.accountsFile).map((account) => ({
     ...account,
     key: accountCacheKey(account)
   }));
@@ -531,6 +604,77 @@ function syncSessionStoreFile(accounts = loadAccountsWithKeys()) {
   } catch {
     // Session persistence is only an optimization.
   }
+}
+
+function pruneApiKeyStore(store = {}, accounts = loadAccountsWithKeys()) {
+  const activeKeys = buildAccountKeySet(accounts);
+  const nextStore = {};
+
+  for (const key of activeKeys) {
+    const record = store?.[key];
+    if (!record?.apiKey) continue;
+    nextStore[key] = {
+      apiKey: String(record.apiKey),
+      updatedAt: record.updatedAt || nowIso()
+    };
+  }
+
+  return nextStore;
+}
+
+function syncApiKeyStoreFile(accounts = loadAccountsWithKeys()) {
+  try {
+    const filePath = getApiKeyStorePath();
+    if (!fs.existsSync(filePath)) return;
+    const rawStore = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const nextStore = pruneApiKeyStore(rawStore, accounts);
+    if (JSON.stringify(rawStore) !== JSON.stringify(nextStore)) {
+      fs.writeFileSync(filePath, JSON.stringify(nextStore), "utf8");
+    }
+  } catch {
+    // API key persistence is only an optimization.
+  }
+}
+
+function readApiKeyStore() {
+  try {
+    const filePath = getApiKeyStorePath();
+    if (!fs.existsSync(filePath)) return {};
+    const rawStore = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const nextStore = pruneApiKeyStore(rawStore);
+    if (JSON.stringify(rawStore) !== JSON.stringify(nextStore)) {
+      writeApiKeyStore(nextStore);
+    }
+    return nextStore;
+  } catch {
+    return {};
+  }
+}
+
+function writeApiKeyStore(store) {
+  try {
+    const filePath = getApiKeyStorePath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(pruneApiKeyStore(store)), "utf8");
+  } catch {
+    // API key persistence is only an optimization.
+  }
+}
+
+function readPersistedApiKey(account) {
+  const key = account.key || accountCacheKey(account);
+  return readApiKeyStore()[key] || null;
+}
+
+function writePersistedApiKey(account, apiKey, updatedAt = nowIso()) {
+  if (!account || !apiKey || isMaskedApiKey(apiKey)) return;
+  const key = account.key || accountCacheKey(account);
+  const store = readApiKeyStore();
+  store[key] = {
+    apiKey: String(apiKey),
+    updatedAt
+  };
+  writeApiKeyStore(store);
 }
 
 function invalidateSession(account) {
@@ -623,7 +767,7 @@ function getNextAutoCheckinRunAt(
   const todayKey = formatDayKey(todayParts);
   const scheduledToday = getScheduledDateForDay(todayParts, config.time, config.timezone);
 
-  if (store.lastTriggeredDay === todayKey) {
+  if (isAutoCheckinCompletedForDay(todayKey)) {
     return getScheduledDateForDay(
       getNextDayParts(todayParts, config.timezone),
       config.time,
@@ -718,6 +862,152 @@ function sanitizeUserForSession(user) {
   return safeUser;
 }
 
+function sanitizeDisplayName(value, fallback = "") {
+  const cleanDisplayCandidate = (candidate) => {
+    const normalized = String(candidate ?? "")
+    .replace(/：/g, ":")
+    .replace(/，/g, ",")
+    .replace(/；/g, ";")
+    .trim();
+    return normalized
+      .replace(/^(?:账号|用户名|username|user)\s*[:=]\s*/i, "")
+      .replace(/\s*(?:密码|password|pass)\s*[:=].*$/i, "")
+      .split(/[;,]/)[0]
+      .trim()
+      .replace(/^["']|["']$/g, "");
+  };
+
+  return cleanDisplayCandidate(value) || cleanDisplayCandidate(fallback);
+}
+
+function extractApiKeyFromTokenItem(item) {
+  if (typeof item === "string") return item.trim();
+  if (!item || typeof item !== "object") return "";
+  return String(
+    item.key ||
+      item.api_key ||
+      item.apiKey ||
+      item.token ||
+      item.value ||
+      item.secret ||
+      ""
+  ).trim();
+}
+
+function isMaskedApiKey(value = "") {
+  return String(value).includes("*");
+}
+
+function normalizeTokenItems(payload = {}) {
+  const data = unwrap(payload) || {};
+  const items = Array.isArray(data)
+    ? data
+    : data.items || data.tokens || data.records || data.list || data.data;
+  return Array.isArray(items) ? items : [];
+}
+
+function isActiveTokenItem(item) {
+  const status = readPath(item, ["status", "enabled", "active"]);
+  if (status === undefined || status === null || status === "") return true;
+  if (typeof status === "boolean") return status;
+  return ["1", "true", "enabled", "active"].includes(String(status).toLowerCase());
+}
+
+function tokenSortValue(item) {
+  return toNumber(
+    readPath(item, ["created_time", "createdTime", "created_at", "createdAt", "id"]),
+    0
+  );
+}
+
+function pickActiveTokenItem(items = []) {
+  return items
+    .filter(isActiveTokenItem)
+    .sort((left, right) => tokenSortValue(right) - tokenSortValue(left))[0] || null;
+}
+
+function apiKeySyncRequestOptions(session) {
+  return {
+    headers: sessionHeaders(session),
+    timeout: Math.min(Number(provider.timeoutMs || DEFAULT_TIMEOUT), 5_000)
+  };
+}
+
+async function fetchFullTokenKey(session, tokenId) {
+  if (tokenId === undefined || tokenId === null || tokenId === "") return "";
+
+  try {
+    const response = await client.post(
+      `/api/token/${encodeURIComponent(String(tokenId))}/key`,
+      null,
+      apiKeySyncRequestOptions(session)
+    );
+    if (response.status < 200 || response.status >= 300) return null;
+    if (!isSuccessEnvelope(response.data)) return null;
+
+    const apiKey = extractApiKeyFromTokenItem(unwrap(response.data));
+    return apiKey && !isMaskedApiKey(apiKey) ? apiKey : "";
+  } catch (error) {
+    debugLog("api-key-full-fetch-failed", {
+      username: session.username,
+      status: error?.status || error?.response?.status,
+      message: error?.message
+    });
+    return null;
+  }
+}
+
+async function fetchAccountApiKey(session) {
+  const endpoints = [
+    "/api/token/?p=1&size=100",
+    "/api/token/search?keyword=&token=&p=1&size=100"
+  ];
+  let reachedTokenEndpoint = false;
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await client.get(endpoint, apiKeySyncRequestOptions(session));
+      if ([400, 401, 403, 404, 405, 429].includes(response.status)) continue;
+      if (response.status < 200 || response.status >= 300) continue;
+      if (!isSuccessEnvelope(response.data)) continue;
+
+      reachedTokenEndpoint = true;
+      const tokenItem = pickActiveTokenItem(normalizeTokenItems(response.data));
+      if (!tokenItem) return "";
+
+      const tokenId = readPath(tokenItem, ["id"]);
+      const fullKey = await fetchFullTokenKey(session, tokenId);
+      if (fullKey) return fullKey;
+
+      const inlineKey = extractApiKeyFromTokenItem(tokenItem);
+      if (inlineKey) return inlineKey;
+      return fullKey === null ? null : "";
+    } catch (error) {
+      debugLog("api-key-list-fetch-failed", {
+        username: session.username,
+        endpoint,
+        status: error?.status || error?.response?.status,
+        message: error?.message
+      });
+    }
+  }
+
+  return reachedTokenEndpoint ? "" : null;
+}
+
+function applyAccountApiKey(state, apiKey) {
+  if (apiKey === null || apiKey === undefined) return state;
+  const normalizedApiKey = String(apiKey || "").trim();
+  if (!normalizedApiKey) return state;
+  if (isMaskedApiKey(normalizedApiKey) && state.apiKey && !isMaskedApiKey(state.apiKey)) {
+    return state;
+  }
+  state.apiKey = normalizedApiKey;
+  state.apiKeyUpdatedAt = nowIso();
+  state.updatedAt = nowIso();
+  return state;
+}
+
 function assertHttpOk(response, context) {
   if (response.status === 429) {
     const error = new CaowoError("站点限流，请稍后重试", 429, "RATE_LIMIT", response.data);
@@ -788,16 +1078,16 @@ function cooldownMessage() {
   return `站点限流冷却中，约 ${seconds} 秒后再重试`;
 }
 
-export function delay(ms) {
+function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function clearDashboardCache() {
+function clearDashboardCache() {
   dashboardCache = null;
   dashboardInFlight = null;
 }
 
-export function isRateLimitError(error) {
+function isRateLimitError(error) {
   return (
     error?.status === 429 ||
     error?.response?.status === 429 ||
@@ -805,7 +1095,7 @@ export function isRateLimitError(error) {
   );
 }
 
-export function getRequestDelay() {
+function getRequestDelay() {
   return getUsageSyncDelayMs();
 }
 
@@ -823,6 +1113,7 @@ function getAccounts() {
   const accounts = loadAccountsWithKeys();
   pruneRuntimeCaches(accounts);
   syncSessionStoreFile(accounts);
+  syncApiKeyStoreFile(accounts);
   return accounts;
 }
 
@@ -832,11 +1123,20 @@ function getAccountByUsername(username) {
 
 function quotaToCurrency(rawQuota, rates = siteRates) {
   const quota = toNumber(rawQuota, 0);
-  return roundMoney(
-    (quota / rates.quotaPerUnit) *
-      rates.usdExchangeRate *
-      rates.customCurrencyExchangeRate
-  );
+  const displayType = String(rates.quotaDisplayType || "USD").toUpperCase();
+  const quotaPerUnit = toNumber(rates.quotaPerUnit, DEFAULT_QUOTA_PER_UNIT);
+  const displayRate =
+    displayType === "CNY"
+      ? toNumber(rates.usdExchangeRate, DEFAULT_USD_EXCHANGE_RATE)
+      : displayType === "CUSTOM"
+        ? toNumber(rates.customCurrencyExchangeRate, DEFAULT_CUSTOM_CURRENCY_EXCHANGE_RATE)
+        : 1;
+  if (displayType === "TOKENS") return roundMoney(quota);
+  return roundMoney((quota / (quotaPerUnit > 0 ? quotaPerUnit : DEFAULT_QUOTA_PER_UNIT)) * displayRate);
+}
+
+function checkinRewardToCurrency(rawQuota, rates = siteRates) {
+  return quotaToCurrency(rawQuota, rates);
 }
 
 function getAccountState(account) {
@@ -857,10 +1157,14 @@ function setAccountState(account, nextState) {
 }
 
 function createInitialAccountState(account) {
+  const persistedApiKey = readPersistedApiKey(account);
   return {
     username: account.username,
     displayName: account.username,
+    apiKey: persistedApiKey?.apiKey || "",
+    apiKeyUpdatedAt: persistedApiKey?.updatedAt || null,
     balance: 0,
+    usedQuota: 0,
     totalQuota: 0,
     remainingQuota: 0,
     usagePercent: 0,
@@ -885,6 +1189,7 @@ function createInitialAccountState(account) {
     },
     raw: {
       balance: 0,
+      usedQuota: 0,
       totalQuota: 0,
       remainingQuota: 0,
       todayUsedRaw: null,
@@ -900,6 +1205,8 @@ function ensureCurrentDayState(state, account) {
       ...state,
       username: account.username,
       displayName: state.displayName || account.username,
+      apiKey: state.apiKey || "",
+      apiKeyUpdatedAt: state.apiKeyUpdatedAt || null,
       checkin: {
         dayKey: today,
         signedToday: false,
@@ -940,19 +1247,22 @@ function buildAccountView(state) {
   const totalQuota =
     state.totalQuota > 0
       ? state.totalQuota
-      : roundMoney(state.balance + (todayUsedValue ?? 0));
-  const remainingQuota =
-    todayUsedValue == null
-      ? roundMoney(state.remainingQuota || state.balance || 0)
-      : roundMoney(Math.max(totalQuota - todayUsedValue, 0));
+      : roundMoney(state.balance + (state.usedQuota ?? 0));
+  const remainingQuota = roundMoney(state.remainingQuota || state.balance || 0);
+  const usedQuota =
+    state.usedQuota > 0
+      ? state.usedQuota
+      : roundMoney(Math.max(totalQuota - remainingQuota, 0));
   const usagePercent =
-    todayUsedValue == null || totalQuota <= 0
+    totalQuota <= 0
       ? 0
-      : Math.round((todayUsedValue / totalQuota) * 1000) / 10;
+      : Math.round((usedQuota / totalQuota) * 1000) / 10;
 
   return {
     username: state.username,
-    displayName: state.displayName,
+    displayName: sanitizeDisplayName(state.displayName, state.username),
+    apiKey: state.apiKey || "",
+    apiKeyUpdatedAt: state.apiKeyUpdatedAt || null,
     signedToday: state.checkin.signedToday,
     checkinStatus: CHECKIN_STATUSES.has(state.checkin.status) ? state.checkin.status : "unknown",
     checkinMessage: state.checkin.message,
@@ -963,6 +1273,7 @@ function buildAccountView(state) {
     totalQuota,
     remainingQuota,
     balance: state.balance,
+    usedQuota,
     usagePercent,
     lastCheckinReward: state.checkin.reward,
     currencySymbol: state.currencySymbol || siteRates.currencySymbol,
@@ -989,9 +1300,33 @@ function normalizeRates(payload = {}) {
     readPath(data, ["quota_per_unit", "quotaPerUnit", "quota.unit", "settings.quota_per_unit"]),
     DEFAULT_QUOTA_PER_UNIT
   );
+  const quotaDisplayType = String(
+    provider.quotaDisplayTypeOverride ||
+      readPath(data, ["quota_display_type", "quotaDisplayType", "settings.quota_display_type"]) ||
+      "USD"
+  ).toUpperCase();
+  const customCurrencySymbol =
+    readPath(data, [
+      "custom_currency_symbol",
+      "currency_symbol",
+      "currencySymbol",
+      "settings.custom_currency_symbol"
+    ]) || DEFAULT_CURRENCY_SYMBOL;
 
   return {
     quotaPerUnit: quotaPerUnit > 0 ? quotaPerUnit : DEFAULT_QUOTA_PER_UNIT,
+    quotaUnitPrice: toNumber(
+      readPath(data, [
+        "price",
+        "unit_price",
+        "unitPrice",
+        "stripe_unit_price",
+        "settings.price",
+        "settings.unit_price"
+      ]),
+      DEFAULT_QUOTA_UNIT_PRICE
+    ),
+    quotaDisplayType,
     usdExchangeRate: toNumber(
       readPath(data, ["usd_exchange_rate", "usdExchangeRate", "settings.usd_exchange_rate"]),
       DEFAULT_USD_EXCHANGE_RATE
@@ -1006,12 +1341,14 @@ function normalizeRates(payload = {}) {
       DEFAULT_CUSTOM_CURRENCY_EXCHANGE_RATE
     ),
     currencySymbol:
-      readPath(data, [
-        "custom_currency_symbol",
-        "currency_symbol",
-        "currencySymbol",
-        "settings.custom_currency_symbol"
-      ]) || DEFAULT_CURRENCY_SYMBOL
+      provider.currencySymbolOverride ||
+      (quotaDisplayType === "USD"
+        ? "$"
+        : quotaDisplayType === "CNY"
+          ? "¥"
+          : quotaDisplayType === "CUSTOM"
+            ? customCurrencySymbol
+            : DEFAULT_CURRENCY_SYMBOL)
   };
 }
 
@@ -1079,7 +1416,10 @@ async function loginAccount(account, { force = false } = {}) {
   const userId =
     readPath(data, ["id", "user_id", "userId", "user.id", "user.user_id"]) || account.username;
   const displayName =
-    readPath(user, ["display_name", "displayName", "nickname", "name", "username"]) ||
+    sanitizeDisplayName(
+      readPath(user, ["display_name", "displayName", "nickname", "name", "username"]),
+      account.username
+    ) ||
     account.username;
 
   const session = {
@@ -1244,9 +1584,23 @@ async function fetchTrendCheckinStats(session) {
   };
 }
 
+function getPayloadRows(payload = {}) {
+  const data = unwrap(payload) || {};
+  const rows = Array.isArray(data) ? data : data.items || data.logs || data.records || data.data;
+  return Array.isArray(rows) ? rows : [];
+}
+
+function isConsumptionLogRow(row) {
+  const type = readPath(row, ["type", "log_type", "logType"]);
+  if (type === undefined || type === null || type === "") return true;
+  const normalizedType = String(type).trim().toLowerCase();
+  return normalizedType === "2" || normalizedType === "consume" || normalizedType === "consumption";
+}
+
 function sumArrayQuota(rows) {
   if (!Array.isArray(rows)) return 0;
   return rows.reduce((sum, row) => {
+    if (!isConsumptionLogRow(row)) return sum;
     const raw =
       readPath(row, [
         "quota",
@@ -1257,26 +1611,25 @@ function sumArrayQuota(rows) {
         "value",
         "cost"
       ]) || 0;
-    return sum + toNumber(raw, 0);
+    return sum + Math.max(toNumber(raw, 0), 0);
   }, 0);
 }
 
 function normalizeUsageStats(payload = {}) {
   const data = unwrap(payload) || {};
-  const rows = Array.isArray(data) ? data : data.items || data.logs || data.records || data.data;
+  const rows = getPayloadRows(payload);
   const directValue = toNumber(
     readPath(data, [
-      "quota",
       "today_used_quota",
       "todayUsedQuota",
       "today_used",
       "used_quota_today",
-      "usedQuota",
-      "used_quota",
       "quota_today",
       "usage_quota",
-      "consume_quota",
-      "amount"
+      "today_consume_quota",
+      "todayConsumeQuota",
+      "daily_used_quota",
+      "dailyUsedQuota"
     ]),
     NaN
   );
@@ -1288,12 +1641,60 @@ function normalizeUsageStats(payload = {}) {
   return { todayUsedRaw: sumArrayQuota(rows) };
 }
 
+async function fetchTodayUsageFromLogs(session, start, end) {
+  let totalRaw = 0;
+
+  for (let page = 1; page <= MAX_USAGE_LOG_PAGES; page += 1) {
+    const params = new URLSearchParams({
+      p: String(page),
+      page_size: String(USAGE_LOG_PAGE_SIZE),
+      type: "2",
+      token_name: "",
+      model_name: "",
+      start_timestamp: String(start),
+      end_timestamp: String(end),
+      group: "",
+      request_id: ""
+    });
+    const response = await client.get(`/api/log/self/?${params.toString()}`, {
+      headers: sessionHeaders(session)
+    });
+
+    if (response.status === 401 || response.status === 403) {
+      throw new CaowoError("登录已失效，请重新同步", response.status, "AUTH_FAILED");
+    }
+    if ([400, 404, 405].includes(response.status)) {
+      return null;
+    }
+
+    assertHttpOk(response, "读取当日消费日志");
+    if (!isSuccessEnvelope(response.data)) {
+      return null;
+    }
+
+    const data = unwrap(response.data) || {};
+    const rows = getPayloadRows(response.data);
+    totalRaw += sumArrayQuota(rows);
+
+    const total = toNumber(readPath(data, ["total", "count", "total_count", "totalCount"]), NaN);
+    const pageSize = toNumber(
+      readPath(data, ["page_size", "pageSize", "limit"]),
+      USAGE_LOG_PAGE_SIZE
+    );
+    if (!Number.isFinite(total) || total <= page * pageSize || rows.length < pageSize) {
+      return { todayUsedRaw: totalRaw };
+    }
+  }
+
+  return { todayUsedRaw: totalRaw };
+}
+
 async function fetchTodayUsageStats(session) {
   const { start, end } = todayRangeSeconds();
+  const logStats = await fetchTodayUsageFromLogs(session, start, end);
+  if (logStats) return logStats;
+
   const endpoints = [
-    `/api/log/self/stat?type=0&start_timestamp=${start}&end_timestamp=${end}`,
-    `/api/log/self/stat?start_timestamp=${start}&end_timestamp=${end}`,
-    `/api/log/stat/self?type=0&start_timestamp=${start}&end_timestamp=${end}`,
     `/api/data/self?start_timestamp=${start}&end_timestamp=${end}`,
     `/api/user/usage?start_timestamp=${start}&end_timestamp=${end}`
   ];
@@ -1320,6 +1721,10 @@ async function fetchTodayUsageStats(session) {
 
 function mergeBaseInfoFromUser(state, user) {
   const rawBalance = toNumber(readPath(user, ["quota"]), 0);
+  const rawUsedQuota = toNumber(
+    readPath(user, ["used_quota", "usedQuota", "quota_used", "quotaUsed", "used"]),
+    0
+  );
   const rawTotal = toNumber(
     readPath(user, [
       "total_quota",
@@ -1331,20 +1736,32 @@ function mergeBaseInfoFromUser(state, user) {
     ]),
     0
   );
+  const rawTotalFromUsage = rawBalance + rawUsedQuota;
+  const normalizedRawTotal = rawTotal > 0 ? rawTotal : rawTotalFromUsage;
+  const normalizedRawUsedQuota =
+    rawUsedQuota > 0
+      ? rawUsedQuota
+      : rawTotal > rawBalance
+        ? rawTotal - rawBalance
+        : 0;
   const displayName =
-    String(readPath(user, ["display_name", "displayName", "nickname", "name", "username"]) || "") ||
-    state.displayName ||
-    state.username;
+    sanitizeDisplayName(
+      readPath(user, ["display_name", "displayName", "nickname", "name", "username"]),
+      state.displayName || state.username
+    ) || state.displayName || state.username;
 
   state.displayName = displayName;
   state.balance = quotaToCurrency(rawBalance, siteRates);
-  state.totalQuota = rawTotal > 0 ? quotaToCurrency(rawTotal, siteRates) : state.balance;
+  state.usedQuota = quotaToCurrency(normalizedRawUsedQuota, siteRates);
+  state.totalQuota =
+    normalizedRawTotal > 0 ? quotaToCurrency(normalizedRawTotal, siteRates) : state.balance;
   state.remainingQuota = state.balance;
   state.currencySymbol = siteRates.currencySymbol;
   state.updatedAt = nowIso();
   state.lastRemoteSyncAt = nowIso();
   state.raw.balance = rawBalance;
-  state.raw.totalQuota = rawTotal;
+  state.raw.usedQuota = normalizedRawUsedQuota;
+  state.raw.totalQuota = normalizedRawTotal;
   state.raw.remainingQuota = rawBalance;
   return state;
 }
@@ -1355,7 +1772,7 @@ function applyCheckinStats(state, checkinStats, source = "remote") {
   state.checkin.signedToday = Boolean(checkinStats.signedToday);
   state.checkin.status = checkinStats.signedToday ? "checked" : "unchecked";
   state.checkin.message = checkinStats.signedToday ? "今日已签到" : "待签到";
-  state.checkin.reward = quotaToCurrency(checkinStats.rewardRaw, siteRates);
+  state.checkin.reward = checkinRewardToCurrency(checkinStats.rewardRaw, siteRates);
   state.checkin.updatedAt = nowIso();
   state.checkin.source = source;
   state.raw.checkinRecords = checkinStats.records || [];
@@ -1398,11 +1815,20 @@ async function syncAccountUsage(account) {
 
   await fetchSiteStatus();
   return withAccountSession(account, async (session) => {
+    const apiKey = await fetchAccountApiKey(session);
+    if (apiKey && !isMaskedApiKey(apiKey)) {
+      writePersistedApiKey(account, apiKey);
+    }
+    if (apiKey !== null) {
+      updateAccountState(account, (state) => applyAccountApiKey(state, apiKey));
+    }
+
     const user = await fetchSelf(session);
     const checkinStats = await fetchTrendCheckinStats(session);
     const usageStats = await fetchTodayUsageStats(session);
 
     updateAccountState(account, (state) => {
+      applyAccountApiKey(state, apiKey);
       mergeBaseInfoFromUser(state, user);
       if (checkinStats) {
         applyCheckinStats(state, checkinStats, "remote");
@@ -1476,6 +1902,61 @@ function getCheckinQueueProgress() {
   }
 
   return progress;
+}
+
+function getUnsignedAccountUsernames(dayKey = currentDayKey()) {
+  return getAccounts()
+    .filter((account) => {
+      const state = getAccountState(account);
+      return state.checkin.dayKey !== dayKey || !state.checkin.signedToday;
+    })
+    .map((account) => account.username);
+}
+
+function isAutoCheckinCompletedForDay(dayKey = currentDayKey()) {
+  const accounts = getAccounts();
+  if (!accounts.length) return false;
+  return !getUnsignedAccountUsernames(dayKey).length;
+}
+
+function recordAutoCheckinQueueResult(progress = getCheckinQueueProgress()) {
+  const config = getAutoCheckinConfig();
+  const completedAt = new Date();
+  const todayKey = getDayKeyForDate(completedAt, config.timezone);
+  const store = autoCheckinScheduler.store;
+
+  if (store.activeDay !== todayKey) return;
+  if (progress.pending > 0) return;
+
+  const completedAtIso = completedAt.toISOString();
+  const processed = progress.completed + progress.skipped + progress.failed;
+  const unsignedUsernames = getUnsignedAccountUsernames(todayKey);
+
+  if (progress.total > 0 && processed === progress.total && !unsignedUsernames.length) {
+    updateAutoCheckinStore({
+      lastTriggeredDay: todayKey,
+      lastCompletedDay: todayKey,
+      lastCompletedAt: completedAtIso,
+      lastAttemptAt: completedAtIso,
+      lastErrorMessage: null,
+      activeDay: null
+    });
+    return;
+  }
+
+  updateAutoCheckinStore({
+    lastTriggeredDay: null,
+    lastCompletedDay: null,
+    lastCompletedAt: null,
+    lastAttemptAt: completedAtIso,
+    lastErrorMessage:
+      unsignedUsernames.length
+        ? `Auto check-in incomplete: unsigned accounts ${unsignedUsernames.join(", ")}`
+        : progress.total > 0
+          ? `Auto check-in incomplete: ${progress.failed}/${progress.total} accounts failed`
+          : "Auto check-in queue finished without accounts",
+    activeDay: null
+  });
 }
 
 function getUsageSyncProgress() {
@@ -1552,10 +2033,12 @@ function serializeAutoCheckinState() {
   let status = "disabled";
   if (config.enabled) {
     status = "scheduled";
-    if (store.lastTriggeredDay === todayKey) {
+    if (isAutoCheckinCompletedForDay(todayKey)) {
       if (checkinQueue.status === "cooldown") status = "cooldown";
-      else if (checkinQueue.running || checkinQueue.status === "running") status = "running";
+      else if ((checkinQueue.running || checkinQueue.status === "running") && hasPendingCheckinItems()) status = "running";
       else status = "triggered";
+    } else if (store.activeDay === todayKey && hasPendingCheckinItems()) {
+      status = checkinQueue.status === "cooldown" ? "cooldown" : "running";
     } else if (lastErrorMessage) {
       status = "retrying";
     }
@@ -1569,6 +2052,8 @@ function serializeAutoCheckinState() {
     nextRunAt: getNextAutoCheckinRunAt(config, store, now),
     lastTriggeredAt: store.lastTriggeredAt,
     lastTriggeredDay: store.lastTriggeredDay,
+    lastCompletedAt: store.lastCompletedAt,
+    lastCompletedDay: store.lastCompletedDay,
     lastAttemptAt: store.lastAttemptAt,
     lastErrorMessage,
     status
@@ -1692,7 +2177,7 @@ function ensureCheckinQueue(scope = "all") {
       ? "cooldown"
       : "running"
     : "completed";
-  checkinQueue.delayMs = CHECKIN_INITIAL_DELAY;
+  checkinQueue.delayMs = getCheckinInitialDelayMs();
   checkinQueue.autoResume = hasPendingItemsInNextQueue;
   checkinQueue.cooldownUntil =
     hasPendingItemsInNextQueue && isCoolingDown() ? getCooldownUntilIso() : null;
@@ -1801,6 +2286,27 @@ async function fastCheckinAccount(account) {
   }
 
   return withAccountSession(account, async (session) => {
+    try {
+      const checkinStats = await fetchTrendCheckinStats(session);
+      if (checkinStats?.signedToday) {
+        return {
+          message: "今日已签到",
+          rewardRaw: checkinStats.rewardRaw || 0,
+          signedToday: true,
+          status: "checked"
+        };
+      }
+    } catch (error) {
+      if (error?.code === "AUTH_FAILED" || isRateLimitError(error)) {
+        throw error;
+      }
+      debugLog("checkin-preflight-failed", {
+        username: account.username,
+        status: error?.status || error?.response?.status,
+        message: error?.message
+      });
+    }
+
     const response = await client.post("/api/user/checkin", null, {
       headers: sessionHeaders(session)
     });
@@ -1827,7 +2333,7 @@ function recordCheckinSuccess(account, result, source = "remote") {
     state.checkin.status = "checked";
     state.checkin.message = result.message || "今日已签到";
     state.checkin.reward =
-      result.rewardRaw > 0 ? quotaToCurrency(result.rewardRaw, siteRates) : state.checkin.reward;
+      result.rewardRaw > 0 ? checkinRewardToCurrency(result.rewardRaw, siteRates) : state.checkin.reward;
     state.checkin.updatedAt = nowIso();
     state.checkin.source = source;
     state.currencySymbol = siteRates.currencySymbol;
@@ -1846,6 +2352,152 @@ function recordCheckinFailure(account, message) {
     state.updatedAt = nowIso();
     return state;
   });
+}
+
+function needsCheckinStatusSync(account, dayKey = currentDayKey()) {
+  const state = getAccountState(account);
+  return (
+    state.checkin.dayKey !== dayKey ||
+    state.checkin.status === "unknown" ||
+    state.checkin.status === "failed" ||
+    !state.checkin.signedToday
+  );
+}
+
+function needsBaseInfoSync(account) {
+  const state = getAccountState(account);
+  return !state.lastRemoteSyncAt;
+}
+
+function shouldSyncCheckinStatuses(force = false) {
+  if (checkinStatusSyncInFlight) return false;
+  if (isCoolingDown()) return false;
+  if (!force && Date.now() - lastCheckinStatusSyncAt < CHECKIN_STATUS_SYNC_THROTTLE_MS) {
+    return false;
+  }
+  return force || getAccounts().some((account) => needsCheckinStatusSync(account) || needsBaseInfoSync(account));
+}
+
+function markCheckinQueueItemSigned(account, checkinStats) {
+  const item = checkinQueue.items.find((entry) => entry.username === account.username);
+  if (!item || !["pending", "failed"].includes(item.status)) return false;
+
+  item.status = "skipped";
+  item.message = "今日已签到";
+  item.reward = checkinRewardToCurrency(checkinStats.rewardRaw || 0, siteRates);
+  usageSyncQueue.priorityUsernames.add(account.username);
+  updateCheckinQueueProgressMessage();
+  return true;
+}
+
+function settleCheckinQueueAfterStatusSync() {
+  const progress = getCheckinQueueProgress();
+  if (!checkinQueue.items.length || progress.pending > 0) return;
+
+  checkinQueue.status = "completed";
+  checkinQueue.currentUsername = null;
+  checkinQueue.cooldownUntil = null;
+  updateCheckinQueueProgressMessage();
+  recordAutoCheckinQueueResult(progress);
+  kickUsageSync({
+    priorityUsernames: checkinQueue.items.map((item) => item.username)
+  });
+}
+
+async function syncCheckinStatuses({ force = false } = {}) {
+  if (checkinStatusSyncInFlight) return checkinStatusSyncInFlight;
+  if (!shouldSyncCheckinStatuses(force)) return null;
+
+  checkinStatusSyncInFlight = Promise.resolve()
+    .then(async () => {
+      lastCheckinStatusSyncAt = Date.now();
+      await fetchSiteStatus();
+
+      const accounts = getAccounts();
+      for (let index = 0; index < accounts.length; index += 1) {
+        const account = accounts[index];
+        if (!force && !needsCheckinStatusSync(account) && !needsBaseInfoSync(account)) {
+          continue;
+        }
+
+        try {
+          await withAccountSession(account, async (session) => {
+            let user = null;
+            try {
+              user = await fetchSelf(session);
+            } catch (error) {
+              if (error?.code === "AUTH_FAILED" || isRateLimitError(error)) {
+                throw error;
+              }
+              debugLog("base-info-sync-failed", {
+                username: account.username,
+                status: error?.status || error?.response?.status,
+                message: error?.message
+              });
+            }
+
+            const checkinStats = await fetchTrendCheckinStats(session);
+            if (!user && !checkinStats) return;
+
+            updateAccountState(account, (state) => {
+              if (user) {
+                mergeBaseInfoFromUser(state, user);
+              }
+              if (checkinStats) {
+                applyCheckinStats(state, checkinStats, "remote");
+              }
+              return state;
+            });
+            if (checkinStats?.signedToday) {
+              markCheckinQueueItemSigned(account, checkinStats);
+            }
+          });
+          clearAuthFailedAlert(account.username);
+        } catch (error) {
+          if (isRateLimitError(error)) {
+            throw error;
+          }
+          if (error?.code === "AUTH_FAILED") {
+            registerAuthFailedAlert(account.username);
+          }
+          if (isTimeoutError(error)) {
+            registerSyncTimeoutAlert(account.username);
+          }
+          debugLog("checkin-status-sync-failed", {
+            username: account.username,
+            status: error?.status || error?.response?.status,
+            message: error?.message
+          });
+        }
+
+        if (index < accounts.length - 1) {
+          await delay(CHECKIN_STATUS_SYNC_DELAY_MS);
+        }
+      }
+
+      settleCheckinQueueAfterStatusSync();
+      return refreshDashboardSnapshot();
+    })
+    .finally(() => {
+      checkinStatusSyncInFlight = null;
+    });
+
+  return checkinStatusSyncInFlight;
+}
+
+async function waitForCheckinStatusSync(options = {}) {
+  try {
+    await syncCheckinStatuses(options);
+  } catch (error) {
+    debugLog("checkin-status-sync-error", {
+      status: error?.status || error?.response?.status,
+      message: error?.message
+    });
+  }
+}
+
+function kickCheckinStatusSync(options = {}) {
+  void waitForCheckinStatusSync(options);
 }
 
 async function runCheckinQueue() {
@@ -1895,7 +2547,7 @@ async function runCheckinQueue() {
         if (result.signedToday) {
           item.status = isAlreadyCheckedMessage(result.message) ? "skipped" : "completed";
           item.message = result.message;
-          item.reward = quotaToCurrency(result.rewardRaw || 0, siteRates);
+          item.reward = checkinRewardToCurrency(result.rewardRaw || 0, siteRates);
           recordCheckinSuccess(account, result, "remote");
           checkinQueue.lastFailedUsernames.delete(account.username);
           usageSyncQueue.priorityUsernames.add(account.username);
@@ -1906,8 +2558,8 @@ async function runCheckinQueue() {
           checkinQueue.lastFailedUsernames.add(account.username);
         }
         checkinQueue.delayMs = Math.max(
-          CHECKIN_MIN_DELAY,
-          checkinQueue.delayMs - CHECKIN_SUCCESS_STEP
+          getCheckinMinDelayMs(),
+          checkinQueue.delayMs - getCheckinSuccessStepMs()
         );
       } catch (error) {
         item.attempts += 1;
@@ -1926,8 +2578,8 @@ async function runCheckinQueue() {
         recordCheckinFailure(account, item.message);
         checkinQueue.lastFailedUsernames.add(account.username);
         checkinQueue.delayMs = Math.min(
-          CHECKIN_MAX_DELAY,
-          checkinQueue.delayMs + CHECKIN_FAILURE_STEP
+          getCheckinMaxDelayMs(),
+          checkinQueue.delayMs + getCheckinFailureStepMs()
         );
       }
 
@@ -1935,13 +2587,14 @@ async function runCheckinQueue() {
 
       const remainingPending = checkinQueue.items.some((entry) => entry.status === "pending");
       if (remainingPending) {
-        await delay(checkinQueue.delayMs);
+        await delay(withCheckinDelayJitter(checkinQueue.delayMs));
       }
     }
   } finally {
     checkinQueue.running = false;
     checkinQueue.currentUsername = null;
 
+    const progress = getCheckinQueueProgress();
     if (checkinQueue.items.some((entry) => entry.status === "pending")) {
       if (!isCoolingDown()) {
         checkinQueue.status = "paused";
@@ -1951,6 +2604,7 @@ async function runCheckinQueue() {
     }
 
     updateCheckinQueueProgressMessage();
+    recordAutoCheckinQueueResult(progress);
     kickUsageSync({
       priorityUsernames: checkinQueue.items.map((item) => item.username)
     });
@@ -1967,7 +2621,7 @@ async function runUsageSyncQueue() {
     return;
   }
 
-  if (checkinQueue.running) {
+  if (checkinQueue.running && hasPendingCheckinItems()) {
     usageSyncQueue.status = "paused";
     usageSyncQueue.message = "签到进行中，统计同步已暂停";
     usageSyncQueue.updatedAt = nowIso();
@@ -2001,7 +2655,7 @@ async function runUsageSyncQueue() {
         continue;
       }
 
-      if (checkinQueue.running) {
+      if (checkinQueue.running && hasPendingCheckinItems()) {
         usageSyncQueue.status = "paused";
         usageSyncQueue.message = "签到进行中，统计同步已暂停";
         usageSyncQueue.updatedAt = nowIso();
@@ -2073,7 +2727,7 @@ async function runUsageSyncQueue() {
       usageSyncQueue.status = "completed";
       usageSyncQueue.message = "当日用量已同步";
       usageSyncQueue.cooldownUntil = null;
-    } else if (!isCoolingDown() && !checkinQueue.running) {
+    } else if (!isCoolingDown() && (!checkinQueue.running || !hasPendingCheckinItems())) {
       usageSyncQueue.status = "paused";
       usageSyncQueue.message = "当日用量待继续同步";
     }
@@ -2091,6 +2745,7 @@ function buildSummary(accounts) {
       accounts.reduce((sum, account) => sum + account.lastCheckinReward, 0)
     ),
     totalBalance: roundMoney(accounts.reduce((sum, account) => sum + account.balance, 0)),
+    totalQuota: roundMoney(accounts.reduce((sum, account) => sum + account.totalQuota, 0)),
     todayUsedRawTotal: Math.round(
       syncedAccounts.reduce((sum, account) => sum + (account.todayUsedRaw ?? 0), 0)
     ),
@@ -2098,7 +2753,7 @@ function buildSummary(accounts) {
       syncedAccounts.reduce((sum, account) => sum + (account.todayUsed ?? 0), 0)
     ),
     todayRemaining: roundMoney(
-      syncedAccounts.reduce((sum, account) => sum + account.remainingQuota, 0)
+      accounts.reduce((sum, account) => sum + account.remainingQuota, 0)
     ),
     accountCount: accounts.length,
     checkedInCount: accounts.filter((account) => account.signedToday).length,
@@ -2107,7 +2762,7 @@ function buildSummary(accounts) {
       totalAccounts: accounts.length
     },
     todayRemainingCoverage: {
-      exactOrStaleAccounts: syncedAccounts.length,
+      exactOrStaleAccounts: accounts.length,
       totalAccounts: accounts.length
     }
   };
@@ -2130,7 +2785,7 @@ function buildTrend(accounts) {
       const rewardRaw = records
         .filter((record) => record.date === dayKey)
         .reduce((recordSum, record) => recordSum + toNumber(record.quotaAwarded, 0), 0);
-      return sum + quotaToCurrency(rewardRaw, siteRates);
+      return sum + checkinRewardToCurrency(rewardRaw, siteRates);
     }, 0);
 
     return {
@@ -2156,7 +2811,12 @@ function buildDashboardPayload() {
     refreshedAt: nowIso(),
     currencySymbol: siteRates.currencySymbol,
     errors: collectDashboardErrors(accounts),
-    accountFile: getAccountFilePath(),
+    accountFile: getAccountFilePath(provider.accountsFile),
+    provider: {
+      id: provider.id,
+      label: provider.label,
+      baseUrl: provider.baseUrl
+    },
     sync: buildSyncState()
   };
 }
@@ -2229,6 +2889,7 @@ function collectDashboardErrors(accounts) {
 
 function canAutoCheckinRunNow(config, store, now = new Date()) {
   if (!config.enabled) return false;
+  if (checkinQueue.running || hasPendingCheckinItems()) return false;
 
   const parts = getZonedDateParts(now, config.timezone);
   const currentClock = formatClock(parts);
@@ -2237,7 +2898,7 @@ function canAutoCheckinRunNow(config, store, now = new Date()) {
     : currentClock === config.time;
 
   if (!dueNow) return false;
-  if (store.lastTriggeredDay === formatDayKey(parts)) return false;
+  if (isAutoCheckinCompletedForDay(formatDayKey(parts))) return false;
 
   const lastAttemptAt = store.lastAttemptAt ? new Date(store.lastAttemptAt) : null;
   if (
@@ -2276,20 +2937,22 @@ async function runAutoCheckinTick() {
       if (!accepted) {
         updateAutoCheckinStore({
           lastAttemptAt: triggeredAt,
+          activeDay: null,
           lastErrorMessage: result.message || "自动签到未能启动"
         });
         return;
       }
 
       updateAutoCheckinStore({
-        lastTriggeredDay: todayKey,
         lastTriggeredAt: triggeredAt,
         lastAttemptAt: triggeredAt,
-        lastErrorMessage: null
+        lastErrorMessage: null,
+        activeDay: todayKey
       });
     } catch (error) {
       updateAutoCheckinStore({
         lastAttemptAt: triggeredAt,
+        activeDay: null,
         lastErrorMessage: error?.message || "自动签到触发失败"
       });
     }
@@ -2298,7 +2961,7 @@ async function runAutoCheckinTick() {
   }
 }
 
-export function startAutoCheckinScheduler() {
+function startAutoCheckinScheduler() {
   autoCheckinScheduler.store = readAutoCheckinStore();
   if (autoCheckinScheduler.timer) return;
 
@@ -2309,14 +2972,14 @@ export function startAutoCheckinScheduler() {
   void runAutoCheckinTick();
 }
 
-export function stopAutoCheckinScheduler() {
+function stopAutoCheckinScheduler() {
   if (autoCheckinScheduler.timer) {
     clearInterval(autoCheckinScheduler.timer);
     autoCheckinScheduler.timer = null;
   }
 }
 
-function scheduleBackgroundWork({ force = false, selectedUsername = null } = {}) {
+function scheduleBackgroundWork({ force = false, selectedUsername = null, syncCheckinStatus = true } = {}) {
   if (force) {
     clearDashboardCache();
 
@@ -2331,13 +2994,20 @@ function scheduleBackgroundWork({ force = false, selectedUsername = null } = {})
     }
   }
 
+  if (syncCheckinStatus) {
+    kickCheckinStatusSync({ force });
+  }
   kickUsageSync({ selectedUsername });
 }
 
-export async function getDashboard({ force = false, selectedUsername = null } = {}) {
+async function getDashboard({ force = false, selectedUsername = null } = {}) {
   await fetchSiteStatus();
+  if (force) {
+    await waitForCheckinStatusSync({ force: true });
+  }
 
   if (!force && dashboardCache && dashboardCache.expiresAt > Date.now()) {
+    kickCheckinStatusSync();
     if (selectedUsername) {
       kickUsageSync({ selectedUsername });
     }
@@ -2345,6 +3015,7 @@ export async function getDashboard({ force = false, selectedUsername = null } = 
   }
 
   if (dashboardInFlight) {
+    kickCheckinStatusSync();
     if (selectedUsername) {
       kickUsageSync({ selectedUsername });
     }
@@ -2353,7 +3024,7 @@ export async function getDashboard({ force = false, selectedUsername = null } = 
 
   dashboardInFlight = Promise.resolve()
     .then(() => {
-      scheduleBackgroundWork({ force, selectedUsername });
+      scheduleBackgroundWork({ force, selectedUsername, syncCheckinStatus: !force });
       return refreshDashboardSnapshot();
     })
     .finally(() => {
@@ -2363,14 +3034,14 @@ export async function getDashboard({ force = false, selectedUsername = null } = 
   return dashboardInFlight;
 }
 
-export async function checkinAccount(account) {
+async function checkinAccount(account) {
   await fetchSiteStatus();
   const state = getAccountState(account);
 
   if (state.checkin.signedToday) {
     return {
       username: account.username,
-      displayName: state.displayName,
+      displayName: sanitizeDisplayName(state.displayName, account.username),
       signedToday: true,
       reward: state.checkin.reward,
       message: "今日已签到",
@@ -2386,16 +3057,16 @@ export async function checkinAccount(account) {
 
   return {
     username: account.username,
-    displayName: getAccountState(account).displayName,
+    displayName: sanitizeDisplayName(getAccountState(account).displayName, account.username),
     signedToday: true,
-    reward: quotaToCurrency(result.rewardRaw || 0, siteRates),
+    reward: checkinRewardToCurrency(result.rewardRaw || 0, siteRates),
     message: result.message,
     status: "checked",
     updatedAt: nowIso()
   };
 }
 
-export async function startOrResumeCheckinQueue(scope = "all") {
+async function startOrResumeCheckinQueue(scope = "all") {
   await fetchSiteStatus();
   const queue = ensureCheckinQueue(scope);
   clearDashboardCache();
@@ -2423,4 +3094,80 @@ export async function startOrResumeCheckinQueue(scope = "all") {
     message,
     sync: buildSyncState()
   };
+}
+
+
+return {
+  delay,
+  clearDashboardCache,
+  isRateLimitError,
+  getRequestDelay,
+  startAutoCheckinScheduler,
+  stopAutoCheckinScheduler,
+  getDashboard,
+  checkinAccount,
+  startOrResumeCheckinQueue
+};
+}
+
+const runtimeCache = new Map();
+
+function getRuntime(providerId = "muyuan") {
+  const normalizedProviderId = normalizeProviderId(providerId);
+  if (!runtimeCache.has(normalizedProviderId)) {
+    runtimeCache.set(normalizedProviderId, createCaowoRuntime(getProviderConfig(normalizedProviderId)));
+  }
+  return runtimeCache.get(normalizedProviderId);
+}
+
+function readProviderId(options = {}) {
+  if (typeof options === "string") return options;
+  return options?.providerId || options?.provider || "muyuan";
+}
+
+export function getQuotaProviders() {
+  return {
+    defaultProvider: "muyuan",
+    providers: getProviderList()
+  };
+}
+
+export function delay(ms) {
+  return getRuntime().delay(ms);
+}
+
+export function clearDashboardCache(options = {}) {
+  return getRuntime(readProviderId(options)).clearDashboardCache();
+}
+
+export function isRateLimitError(error) {
+  return getRuntime().isRateLimitError(error);
+}
+
+export function getRequestDelay(options = {}) {
+  return getRuntime(readProviderId(options)).getRequestDelay();
+}
+
+export function startAutoCheckinScheduler() {
+  for (const provider of getProviderList()) {
+    getRuntime(provider.id).startAutoCheckinScheduler();
+  }
+}
+
+export function stopAutoCheckinScheduler() {
+  for (const provider of getProviderList()) {
+    getRuntime(provider.id).stopAutoCheckinScheduler();
+  }
+}
+
+export async function getDashboard({ providerId = "muyuan", provider = null, force = false, selectedUsername = null } = {}) {
+  return getRuntime(provider || providerId).getDashboard({ force, selectedUsername });
+}
+
+export async function checkinAccount(account, options = {}) {
+  return getRuntime(readProviderId(options)).checkinAccount(account);
+}
+
+export async function startOrResumeCheckinQueue(scope = "all", options = {}) {
+  return getRuntime(readProviderId(options)).startOrResumeCheckinQueue(scope);
 }
