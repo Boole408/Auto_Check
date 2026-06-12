@@ -196,7 +196,7 @@ configure_environment() {
   set_env_value "${temp_env}" "APP_LOGIN_USERNAME" "${login_username}"
   set_env_value "${temp_env}" "APP_LOGIN_PASSWORD" "${login_password}"
   set_env_value "${temp_env}" "APP_LOGIN_SESSION_SECRET" "${session_secret}"
-  set_env_value "${temp_env}" "CAOWO_ACCOUNTS_FILE" "${ACCOUNTS_FILE}"
+  set_env_value "${temp_env}" "MUYUAN_ACCOUNTS_FILE" "${ACCOUNTS_FILE}"
   set_env_value "${temp_env}" "XEM8K5_ACCOUNTS_FILE" "${XEM8K5_ACCOUNTS_FILE}"
   set_env_value "${temp_env}" "DGBMC_ACCOUNTS_FILE" "${DGBMC_ACCOUNTS_FILE}"
   set_env_value "${temp_env}" "JIUUIJ_ACCOUNTS_FILE" "${JIUUIJ_ACCOUNTS_FILE}"

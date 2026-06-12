@@ -155,7 +155,7 @@ export default function QuotaMonitorPage({
     { id: "muyuan", label: "MUYUAN", baseUrl: "" },
     { id: "xem8k5", label: "XEM8K5", baseUrl: "" },
     { id: "dgbmc", label: "DGBMC", baseUrl: "" },
-    { id: "jiuuij", label: "JIUUIJ", displayName: "Joverna", baseUrl: "" }
+    { id: "jiuuij", label: "JIUUIJ", displayName: "JIUUIJ", baseUrl: "" }
   ];
   const {
     data: dashboard,
@@ -351,7 +351,7 @@ export default function QuotaMonitorPage({
                 </span>
                 <div className="min-w-0">
                   <h1 className="truncate text-[1.34rem] font-black tracking-tight text-[#102A24] dark:text-[#E7F7F0] sm:text-[1.6rem]">
-                    CW-Ops 账户管理系统
+                    AutoCheck 账户管理系统
                   </h1>
                   <p className="mt-0.5 text-[12px] text-[#71867F] dark:text-[#8DA69E]">
                     聚焦监测、用量同步和多账号数据统筹，保障额度与生产能力可视可控。

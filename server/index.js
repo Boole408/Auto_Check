@@ -38,7 +38,7 @@ app.get("/api/health", (_req, res) => {
     success: true,
     message: "ok",
     data: {
-      service: "cw-ops-quota-monitor",
+      service: "auto-check-ops",
       time: new Date().toISOString()
     }
   });
@@ -67,7 +67,7 @@ app.use((error, _req, res, _next) => {
 
 const server = app.listen(port, host, () => {
   startAutoCheckinScheduler();
-  console.log(`CW-Ops API is running at http://${host}:${port}`);
+  console.log(`AutoCheck API is running at http://${host}:${port}`);
 });
 
 function shutdown() {

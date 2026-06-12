@@ -91,7 +91,7 @@ export default function LoginPage({
                     Secure Access
                   </p>
                   <h1 className="mt-1 text-[1.9rem] font-black tracking-tight text-[#102A24] dark:text-[#ECF8F3]">
-                    CW-Ops
+                    AutoCheck
                   </h1>
                 </div>
               </div>

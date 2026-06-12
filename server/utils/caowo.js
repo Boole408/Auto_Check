@@ -42,7 +42,7 @@ const client = axios.create({
   headers: {
     Accept: "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "CW-Ops/1.0"
+    "User-Agent": "AutoCheck/1.0"
   },
   validateStatus: (status) => status < 500
 });
@@ -1100,7 +1100,7 @@ function getRequestDelay() {
 }
 
 class CaowoError extends Error {
-  constructor(message, status = 500, code = "CAOWO_ERROR", details = null) {
+  constructor(message, status = 500, code = "AUTOCHECK_ERROR", details = null) {
     super(message);
     this.name = "CaowoError";
     this.status = status;

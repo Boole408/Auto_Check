@@ -1,6 +1,6 @@
-# Auto_CW Ubuntu Deployment
+# AutoCheck Ubuntu Deployment
 
-This directory contains the production deployment assets for `autocw.ccwu.cc`.
+This directory contains the production deployment assets for the AutoCheck panel hosted at `autocw.ccwu.cc`.
 
 ## Target topology
 

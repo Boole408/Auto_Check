@@ -49,7 +49,7 @@ const PROVIDER_DEFS = {
   jiuuij: {
     id: "jiuuij",
     label: "JIUUIJ",
-    displayName: "Joverna",
+    displayName: "JIUUIJ",
     envPrefix: "JIUUIJ",
     defaultBaseUrl: "https://jiuuij.de5.net/",
     defaultAccountsFile: "accounts.jiuuij.txt",
@@ -167,10 +167,10 @@ export function getProviderList() {
   return Object.values(PROVIDER_DEFS).map((def) => {
     const provider = buildProviderConfig(def);
     return {
-    id: provider.id,
-    label: provider.label,
-    displayName: provider.displayName,
-    baseUrl: provider.baseUrl
+      id: provider.id,
+      label: provider.label,
+      displayName: provider.displayName,
+      baseUrl: provider.baseUrl
     };
   });
 }

@@ -6,18 +6,40 @@ function getDefaultAccountFile() {
 }
 
 export function getAccountFilePath(accountFile = null) {
-  return accountFile || process.env.MUYUAN_ACCOUNTS_FILE || process.env.CAOWO_ACCOUNTS_FILE || getDefaultAccountFile();
+  return (
+    accountFile ||
+    process.env.MUYUAN_ACCOUNTS_FILE ||
+    process.env.CAOWO_ACCOUNTS_FILE ||
+    getDefaultAccountFile()
+  );
 }
 
 function cleanValue(value = "") {
-  return value.trim().replace(/^["']|["']$/g, "");
+  return String(value).replace(/^\uFEFF/, "").trim().replace(/^["']|["']$/g, "");
 }
 
-function parseKeyValueLine(line) {
-  const normalized = line
+function normalizeDelimitedLine(line) {
+  return String(line)
+    .replace(/^\uFEFF/, "")
     .replace(/，/g, ",")
     .replace(/；/g, ";")
     .replace(/：/g, ":")
+    .trim();
+}
+
+function isHeaderField(value, candidates) {
+  return candidates.includes(cleanValue(value).toLowerCase());
+}
+
+function isHeaderRecord(username, password) {
+  return (
+    isHeaderField(username, ["username", "user", "account", "账号", "用户名", "账户"]) &&
+    isHeaderField(password, ["password", "pass", "pwd", "密码"])
+  );
+}
+
+function parseKeyValueLine(line) {
+  const normalized = normalizeDelimitedLine(line)
     .replace(/\s+/g, " ")
     .trim();
 
@@ -43,17 +65,30 @@ function parseKeyValueLine(line) {
 }
 
 function parseCsvLine(line) {
-  const parts = line
-    .replace(/，/g, ",")
-    .replace(/；/g, ";")
-    .split(",")
-    .map((part) => cleanValue(part));
+  const normalized = normalizeDelimitedLine(line);
+  const joiner =
+    normalized.includes(",") || normalized.includes(";")
+      ? ","
+      : normalized.includes("\t")
+        ? "\t"
+        : " ";
+  const delimiter =
+    joiner === ","
+      ? /[;,]/
+      : joiner === "\t"
+        ? /\t+/
+        : /\s+/;
+  const parts = normalized
+    .split(delimiter)
+    .map((part) => cleanValue(part))
+    .filter(Boolean);
 
   if (parts.length < 2 || !parts[0] || !parts[1]) return null;
+  if (isHeaderRecord(parts[0], parts[1])) return null;
 
   return {
     username: parts[0],
-    password: parts.slice(1).join(",")
+    password: parts.slice(1).join(joiner === "," ? "," : " ")
   };
 }
 

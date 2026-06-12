@@ -1,5 +1,5 @@
 [Unit]
-Description=Auto_CW web application
+Description=AutoCheck web application
 After=network.target
 
 [Service]

@@ -135,7 +135,7 @@ async function main() {
     VITE_API_BASE_URL: `http://localhost:${apiPort}`
   };
 
-  console.log(`Starting CW-Ops on frontend http://localhost:${webPort}/quota-monitor`);
+  console.log(`Starting AutoCheck on frontend http://localhost:${webPort}/quota-monitor`);
   console.log(`Backend health check: http://localhost:${apiPort}/api/health`);
 
   spawnManaged("API", ["run", "server"], sharedEnv);

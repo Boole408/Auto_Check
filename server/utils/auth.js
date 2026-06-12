@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
 
-const AUTH_COOKIE_NAME = "auto_cw_session";
+const AUTH_COOKIE_NAME = "autocheck_session";
 const DEFAULT_USERNAME = "admin";
 const DEFAULT_PASSWORD = "yuqiaa";
-const DEFAULT_SESSION_SECRET = "auto-cw-session-secret";
+const DEFAULT_SESSION_SECRET = "autocheck-session-secret";
 const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const activeSessionIds = new Map();
 const PRODUCTION_PASSWORD_PLACEHOLDERS = new Set([DEFAULT_PASSWORD, "change-this-login-password"]);
