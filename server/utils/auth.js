@@ -9,6 +9,7 @@ const activeSessionIds = new Map();
 const PRODUCTION_PASSWORD_PLACEHOLDERS = new Set([DEFAULT_PASSWORD, "change-this-login-password"]);
 const PRODUCTION_SECRET_PLACEHOLDERS = new Set([
   DEFAULT_SESSION_SECRET,
+  "auto-cw-session-secret",
   "change-this-session-secret"
 ]);
 
