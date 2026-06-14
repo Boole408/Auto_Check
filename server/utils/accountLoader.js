@@ -326,6 +326,32 @@ function dedupeAccounts(accounts) {
   });
 }
 
+export function mergeAccounts(existingAccounts = [], incomingAccounts = []) {
+  const existing = existingAccounts
+    .map((account) => normalizeAccountRecord(account))
+    .filter(Boolean);
+  const incoming = incomingAccounts
+    .map((account) => normalizeAccountRecord(account))
+    .filter(Boolean);
+  const incomingByUsername = new Map(
+    incoming.map((account) => [account.username, serializeAccount(account)])
+  );
+  const seen = new Set();
+  const merged = existing.map((account) => {
+    seen.add(account.username);
+    return incomingByUsername.get(account.username) || serializeAccount(account);
+  });
+
+  for (const account of incoming) {
+    if (!seen.has(account.username)) {
+      merged.push(serializeAccount(account));
+      seen.add(account.username);
+    }
+  }
+
+  return dedupeAccounts(merged);
+}
+
 function parseTextAccounts(content) {
   const lines = String(content)
     .split(/\r?\n/)
@@ -390,6 +416,16 @@ function serializeAccount(account) {
     ...(account.displayName ? { displayName: account.displayName } : {}),
     ...(account.expiresAt ? { expiresAt: account.expiresAt } : {})
   };
+}
+
+export function backupAccountFile(accountFileOverride = null) {
+  const accountFile = getAccountFilePath(accountFileOverride);
+  if (!fs.existsSync(accountFile)) return null;
+
+  const stamp = new Date().toISOString().replace(/\D/g, "").slice(0, 17);
+  const backupFile = `${accountFile}.backup-${stamp}`;
+  fs.copyFileSync(accountFile, backupFile);
+  return backupFile;
 }
 
 export function saveAccounts(accounts, accountFileOverride = null) {

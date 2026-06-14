@@ -264,7 +264,8 @@ username,token=your_new_api_token,cookie=your_cookie
 - 自动跳过标题行，如 `username,password`
 - 支持 `username,password`、`username,token=xxx`、`username,cookie=xxx`
 - 按 `username` 去重，保留首个有效账号
-- 导入保存时会覆盖当前站点账号文件，并以 JSON 数组保存，避免 token/cookie 被分隔符破坏
+- 导入保存时会合并到当前站点账号文件，同名账号更新，不同名账号保留；保存前会自动生成 `*.backup-时间戳` 备份
+- 账号文件以 JSON 数组保存，避免 token/cookie 被分隔符破坏
 - JSON 同时支持 `{ "accounts": [...] }` 和 `{ "data": [...] }`
 
 ## 页面与接口
@@ -287,7 +288,7 @@ username,token=your_new_api_token,cookie=your_cookie
 | `GET` | `/api/quota-monitor` | 获取看板数据 |
 | `POST` | `/api/quota-monitor/accounts/:username/checkin` | 单账号签到 |
 | `POST` | `/api/quota-monitor/checkin-all` | 批量签到 |
-| `POST` | `/api/quota-monitor/accounts/import` | 导入当前站点账号 |
+| `POST` | `/api/quota-monitor/accounts/import` | 合并导入当前站点账号 |
 
 统一返回结构：
 

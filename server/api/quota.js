@@ -1,5 +1,11 @@
 import express from "express";
-import { loadAccounts, parseAccountsContent, saveAccounts } from "../utils/accountLoader.js";
+import {
+  backupAccountFile,
+  loadAccounts,
+  mergeAccounts,
+  parseAccountsContent,
+  saveAccounts
+} from "../utils/accountLoader.js";
 import { requireAuth } from "../utils/auth.js";
 import {
   checkinAccount,
@@ -125,9 +131,9 @@ router.post("/accounts/import", async (req, res, next) => {
     const providerId = getRequestProviderId(req);
     const content = typeof req.body?.content === "string" ? req.body.content : "";
     const format = req.body?.format === "json" || req.body?.format === "txt" ? req.body.format : "auto";
-    const accounts = parseAccountsContent(content, format);
+    const incomingAccounts = parseAccountsContent(content, format);
 
-    if (!accounts.length) {
+    if (!incomingAccounts.length) {
       res.status(400).json({
         success: false,
         message: "未解析到有效账号，请检查 txt/json 内容格式",
@@ -136,17 +142,25 @@ router.post("/accounts/import", async (req, res, next) => {
       return;
     }
 
-    const result = saveAccounts(accounts, getProviderConfig(providerId).accountsFile);
+    const accountFile = getProviderConfig(providerId).accountsFile;
+    const existingAccounts = loadAccounts(accountFile);
+    const accounts = mergeAccounts(existingAccounts, incomingAccounts);
+    const backupFile = backupAccountFile(accountFile);
+    const result = saveAccounts(accounts, accountFile);
     clearDashboardCache({ providerId });
 
     ok(
       res,
       {
         accountFile: result.accountFile,
+        backupFile,
         count: result.count,
+        importedCount: incomingAccounts.length,
+        previousCount: existingAccounts.length,
+        mode: "merge",
         usernames: result.accounts.map((account) => account.username)
       },
-      `已导入 ${result.count} 个账号`
+      `已合并导入 ${incomingAccounts.length} 个账号，当前共 ${result.count} 个账号`
     );
   } catch (error) {
     if (error instanceof SyntaxError) {

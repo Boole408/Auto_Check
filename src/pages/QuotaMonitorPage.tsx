@@ -233,7 +233,11 @@ export default function QuotaMonitorPage({
 
   const handleImportSuccess = useCallback(
     async (result: ImportAccountsResult) => {
-      setNotice(`已导入 ${result.count} 个账号`);
+      setNotice(
+        result.mode === "merge" && result.importedCount != null
+          ? `已合并导入 ${result.importedCount} 个账号，当前共 ${result.count} 个账号`
+          : `已导入 ${result.count} 个账号`
+      );
       await refetchQuotaData();
     },
     [refetchQuotaData]

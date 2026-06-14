@@ -182,6 +182,10 @@ export interface CheckinAllResult {
 
 export interface ImportAccountsResult {
   accountFile: string;
+  backupFile?: string | null;
   count: number;
+  importedCount?: number;
+  previousCount?: number;
+  mode?: "merge" | "replace";
   usernames: string[];
 }

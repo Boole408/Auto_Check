@@ -129,7 +129,7 @@ export function AccountImportModal({
               <div>
                 <CardTitle>账号导入</CardTitle>
                 <CardDescription>
-                  支持直接粘贴账号密码、token、cookie，或导入 `txt/csv/json` 文件，保存后立即刷新看板。
+                  支持直接粘贴账号密码、token、cookie，或导入 `txt/csv/json` 文件，保存后会合并到当前账号列表。
                 </CardDescription>
               </div>
               <Button variant="ghost" size="icon" onClick={onClose}>
@@ -187,7 +187,7 @@ export function AccountImportModal({
 
             <div className="flex flex-wrap items-center justify-between gap-3">
               <span className="text-xs text-muted-foreground">
-                保存时会覆盖当前账号文件，请确认内容无误。
+                保存时会合并导入并更新同名账号，不会清空其他账号。
               </span>
               <Button
                 onClick={() => void handleImportAccounts()}
