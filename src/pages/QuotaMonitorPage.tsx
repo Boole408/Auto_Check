@@ -155,7 +155,8 @@ export default function QuotaMonitorPage({
     { id: "muyuan", label: "MUYUAN", baseUrl: "" },
     { id: "xem8k5", label: "XEM8K5", baseUrl: "" },
     { id: "dgbmc", label: "DGBMC", baseUrl: "" },
-    { id: "jiuuij", label: "JIUUIJ", displayName: "JIUUIJ", baseUrl: "" }
+    { id: "jiuuij", label: "JIUUIJ", displayName: "JIUUIJ", baseUrl: "" },
+    { id: "anyrouter", label: "ANYROUTER", displayName: "Any Router", baseUrl: "" }
   ];
   const {
     data: dashboard,

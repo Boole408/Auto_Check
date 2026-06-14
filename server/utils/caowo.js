@@ -538,12 +538,23 @@ function passwordHash(password) {
   return crypto.createHash("sha256").update(String(password)).digest("hex");
 }
 
+function accountCredentialFingerprint(account) {
+  const material = [
+    account.password || "",
+    account.token || "",
+    account.cookie || "",
+    account.userId || "",
+    account.expiresAt || ""
+  ].join(":");
+  return passwordHash(material || account.username);
+}
+
 function accountCacheKey(account) {
-  return `${account.username}:${passwordHash(account.password)}`;
+  return `${account.username}:${accountCredentialFingerprint(account)}`;
 }
 
 function sessionCacheKey(account) {
-  return `${account.username}:${passwordHash(account.password)}`;
+  return `${account.username}:${accountCredentialFingerprint(account)}`;
 }
 
 function loadAccountsWithKeys() {
@@ -1041,10 +1052,9 @@ function sessionHeaders(session) {
   };
 
   if (session.token) {
-    headers.Authorization = session.token.startsWith("Bearer ")
-      ? session.token
-      : `Bearer ${session.token}`;
-    headers["New-API-Token"] = session.token;
+    const token = String(session.token).replace(/^Bearer\s+/i, "");
+    headers.Authorization = `Bearer ${token}`;
+    headers["New-API-Token"] = token;
   }
 
   if (session.cookie) {
@@ -1373,6 +1383,47 @@ async function fetchSiteStatus() {
   return siteRates;
 }
 
+function hasImportedSessionCredentials(account) {
+  return Boolean(account?.token || account?.cookie);
+}
+
+function getImportedSessionExpiresAt(account) {
+  if (!account?.expiresAt) return Date.now() + DEFAULT_SESSION_TTL;
+
+  const numericExpiresAt = Number(account.expiresAt);
+  if (Number.isFinite(numericExpiresAt)) {
+    return numericExpiresAt > 10_000_000_000 ? numericExpiresAt : numericExpiresAt * 1000;
+  }
+
+  const parsedExpiresAt = Date.parse(account.expiresAt);
+  return Number.isFinite(parsedExpiresAt) ? parsedExpiresAt : Date.now() + DEFAULT_SESSION_TTL;
+}
+
+function createImportedSession(account) {
+  const expiresAt = getImportedSessionExpiresAt(account);
+  if (expiresAt <= Date.now()) {
+    throw new CaowoError("导入的登录态已过期，请重新从浏览器复制 token/cookie", 401, "AUTH_FAILED");
+  }
+
+  const displayName =
+    sanitizeDisplayName(account.displayName, account.username) || account.username;
+  const userId = account.userId || account.username;
+
+  return {
+    username: account.username,
+    displayName: String(displayName),
+    userId,
+    token: account.token || "",
+    cookie: account.cookie || "",
+    loginUser: sanitizeUserForSession({
+      id: userId,
+      username: account.username,
+      display_name: displayName
+    }),
+    expiresAt
+  };
+}
+
 async function loginAccount(account, { force = false } = {}) {
   const key = sessionCacheKey(account);
   const cached = sessionCache.get(key);
@@ -1388,6 +1439,18 @@ async function loginAccount(account, { force = false } = {}) {
 
   if (isCoolingDown()) {
     throw new CaowoError(cooldownMessage(), 429, "RATE_LIMIT_COOLDOWN");
+  }
+
+  if (hasImportedSessionCredentials(account)) {
+    const importedSession = createImportedSession(account);
+    sessionCache.set(key, importedSession);
+    clearAuthFailedAlert(account.username);
+    return importedSession;
+  }
+
+  if (!account.password) {
+    registerAuthFailedAlert(account.username);
+    throw new CaowoError("账号缺少密码或导入登录态，无法登录站点", 401, "AUTH_FAILED");
   }
 
   const response = assertHttpOk(

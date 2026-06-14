@@ -7,14 +7,19 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { importAccounts } from "@/services/account";
 import type { ImportAccountsResult } from "@/types";
 
-const ACCOUNT_IMPORT_PLACEHOLDER = `支持 txt:
+const ACCOUNT_IMPORT_PLACEHOLDER = `支持账号密码:
 username,password
 账号：your_username，密码：your_password
 
-支持 json:
+支持登录态:
+username,token=your_new_api_token
+username,cookie=your_cookie
+username,token=your_new_api_token,cookie=your_cookie
+
+支持从浏览器 localStorage.user 粘贴 json:
 [
-  { "username": "user1", "password": "pass1" },
-  { "username": "user2", "password": "pass2" }
+  { "username": "user1", "token": "token_value" },
+  { "username": "user2", "cookie": "session_cookie=value" }
 ]`;
 
 interface AccountImportModalProps {
@@ -63,8 +68,8 @@ export function AccountImportModal({
     const file = event.target.files?.[0];
     if (!file) return;
 
-    if (!/\.(txt|json)$/i.test(file.name)) {
-      onNotice?.("仅支持导入 txt 或 json 文件");
+    if (!/\.(txt|json|csv)$/i.test(file.name)) {
+      onNotice?.("仅支持导入 txt、csv 或 json 文件");
       event.target.value = "";
       return;
     }
@@ -124,7 +129,7 @@ export function AccountImportModal({
               <div>
                 <CardTitle>账号导入</CardTitle>
                 <CardDescription>
-                  支持直接粘贴账号密码，或导入 `txt/json` 文件，保存后立即刷新看板。
+                  支持直接粘贴账号密码、token、cookie，或导入 `txt/csv/json` 文件，保存后立即刷新看板。
                 </CardDescription>
               </div>
               <Button variant="ghost" size="icon" onClick={onClose}>
@@ -136,7 +141,7 @@ export function AccountImportModal({
             <input
               ref={fileInputRef}
               type="file"
-              accept=".txt,.json,application/json,text/plain"
+              accept=".txt,.csv,.json,application/json,text/csv,text/plain"
               className="hidden"
               onChange={(event) => void handleImportFileChange(event)}
             />
@@ -148,10 +153,10 @@ export function AccountImportModal({
                 onClick={() => fileInputRef.current?.click()}
               >
                 <FileUp className="h-4 w-4" />
-                选择 txt/json
+                选择 txt/csv/json
               </Button>
               <Badge variant="outline" className="max-w-full truncate">
-                {accountImportFileName || "未选择文件，可直接粘贴内容"}
+                {accountImportFileName || "未选择文件，可直接粘贴账号、token 或 cookie"}
               </Badge>
               {(accountImportDraft || accountImportFileName) ? (
                 <Button
@@ -177,7 +182,7 @@ export function AccountImportModal({
 
             <div className="flex flex-col gap-3 text-xs text-muted-foreground">
               <span>当前保存路径：{accountFile || "./accounts.txt"}</span>
-              <span>支持格式：`username,password`、`账号：xxx，密码：yyy`、JSON 数组对象。</span>
+              <span>支持格式：`username,password`、`username,token=xxx`、`username,cookie=xxx`、JSON 数组对象。</span>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3">

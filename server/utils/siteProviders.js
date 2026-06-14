@@ -56,6 +56,17 @@ const PROVIDER_DEFS = {
     defaultRateLimitCooldownMs: 180_000,
     defaultUsageSyncDelayMs: 4_000,
     defaultCurrencySymbolOverride: "$"
+  },
+  anyrouter: {
+    id: "anyrouter",
+    label: "ANYROUTER",
+    displayName: "Any Router",
+    envPrefix: "ANYROUTER",
+    defaultBaseUrl: "https://anyrouter.top/",
+    defaultAccountsFile: "accounts.anyrouter.txt",
+    defaultRateLimitCooldownMs: 180_000,
+    defaultUsageSyncDelayMs: 4_000,
+    defaultCurrencySymbolOverride: "$"
   }
 };
 

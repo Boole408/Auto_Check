@@ -10,6 +10,7 @@ ACCOUNTS_FILE="${DATA_DIR}/accounts.txt"
 XEM8K5_ACCOUNTS_FILE="${DATA_DIR}/accounts.xem8k5.txt"
 DGBMC_ACCOUNTS_FILE="${DATA_DIR}/accounts.dgbmc.txt"
 JIUUIJ_ACCOUNTS_FILE="${DATA_DIR}/accounts.jiuuij.txt"
+ANYROUTER_ACCOUNTS_FILE="${DATA_DIR}/accounts.anyrouter.txt"
 ENV_FILE="${APP_DIR}/.env"
 ENV_TEMPLATE="${PROJECT_ROOT}/deploy/.env.production.example"
 SYSTEMD_TEMPLATE="${PROJECT_ROOT}/deploy/auto-cw.service"
@@ -168,7 +169,7 @@ prepare_directories() {
   run_root install -d -m 755 -o "${APP_USER}" -g "${APP_GROUP}" "${APP_DIR}" "${DATA_DIR}" "${CERTBOT_WEBROOT}"
   run_root install -d -m 755 -o "${APP_USER}" -g "${APP_GROUP}" "${APP_DIR}/.cache"
   local account_file
-  for account_file in "${ACCOUNTS_FILE}" "${XEM8K5_ACCOUNTS_FILE}" "${DGBMC_ACCOUNTS_FILE}" "${JIUUIJ_ACCOUNTS_FILE}"; do
+  for account_file in "${ACCOUNTS_FILE}" "${XEM8K5_ACCOUNTS_FILE}" "${DGBMC_ACCOUNTS_FILE}" "${JIUUIJ_ACCOUNTS_FILE}" "${ANYROUTER_ACCOUNTS_FILE}"; do
     if [[ -f "${account_file}" ]]; then
       run_root chown "${APP_USER}:${APP_GROUP}" "${account_file}"
       run_root chmod 600 "${account_file}"
@@ -200,6 +201,7 @@ configure_environment() {
   set_env_value "${temp_env}" "XEM8K5_ACCOUNTS_FILE" "${XEM8K5_ACCOUNTS_FILE}"
   set_env_value "${temp_env}" "DGBMC_ACCOUNTS_FILE" "${DGBMC_ACCOUNTS_FILE}"
   set_env_value "${temp_env}" "JIUUIJ_ACCOUNTS_FILE" "${JIUUIJ_ACCOUNTS_FILE}"
+  set_env_value "${temp_env}" "ANYROUTER_ACCOUNTS_FILE" "${ANYROUTER_ACCOUNTS_FILE}"
   run_root install -m 600 -o "${APP_USER}" -g "${APP_GROUP}" "${temp_env}" "${ENV_FILE}"
   rm -f "${temp_env}"
 }
