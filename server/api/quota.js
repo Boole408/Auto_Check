@@ -78,12 +78,21 @@ function parseCurlCookieArg(content) {
 
 function parseCookieFromCurl(content) {
   const source = String(content || "");
-  if (!/^\s*curl\s+/i.test(source) && !/(?:^|\s)(?:-H|--header)\s+["']?cookie\s*:/i.test(source)) {
+  if (!looksLikeCurlImport(source)) {
     return "";
   }
 
   const headers = parseCurlHeaderArgs(source);
   return headers.cookie || parseCurlCookieArg(source);
+}
+
+function looksLikeCurlImport(content) {
+  const source = String(content || "");
+  return (
+    /^\s*curl(?:\.exe)?(?:[\s,]+|$)/i.test(source) ||
+    /(?:^|\s)(?:-H|--header)\s+["']?cookie\s*:/i.test(source) ||
+    /(?:^|\s)(?:-b|--cookie)\s+/i.test(source)
+  );
 }
 
 function sanitizeDisplayName(value, fallback = "") {
@@ -471,6 +480,16 @@ router.post("/accounts/import", async (req, res, next) => {
     const content = typeof req.body?.content === "string" ? req.body.content : "";
     const format = req.body?.format === "json" || req.body?.format === "txt" ? req.body.format : "auto";
     const curlImport = await parseCurlAccountContent(providerId, content);
+    if (!curlImport?.account && looksLikeCurlImport(content)) {
+      res.status(422).json({
+        success: false,
+        message:
+          "已识别为 cURL/网页登录态导入，但服务器无法用其中 Cookie 读取账号信息，已拒绝保存，避免导入后不可用。请在目标站登录后复制 Network 的 /api/user/self 请求为 cURL，或用新版扩展确保读到 Cookie。",
+        data: null
+      });
+      return;
+    }
+
     const parsedAccounts = curlImport?.account
       ? [curlImport.account]
       : parseAccountsContent(content, format);
