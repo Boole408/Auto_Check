@@ -1,5 +1,11 @@
 import { apiClient, unwrapApiEnvelope } from "@/lib/axios";
-import type { ApiEnvelope, CheckinResult, DeleteAccountResult, ImportAccountsResult } from "@/types";
+import type {
+  AccountImportHelperResult,
+  ApiEnvelope,
+  CheckinResult,
+  DeleteAccountResult,
+  ImportAccountsResult
+} from "@/types";
 
 function providerQuery(provider = "muyuan") {
   return `?provider=${encodeURIComponent(provider)}`;
@@ -24,6 +30,15 @@ export async function importAccounts(payload: {
       ...payload,
       provider: payload.provider || "muyuan"
     }
+  );
+
+  return unwrapApiEnvelope(response);
+}
+
+export async function createAccountImportHelper(provider = "muyuan") {
+  const response = await apiClient.post<ApiEnvelope<AccountImportHelperResult>>(
+    "/api/quota-monitor/accounts/import-helper",
+    { provider }
   );
 
   return unwrapApiEnvelope(response);

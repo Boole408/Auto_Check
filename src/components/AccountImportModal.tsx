@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { motion } from "framer-motion";
-import { ExternalLink, FileUp, LoaderCircle, X } from "lucide-react";
+import { ExternalLink, FileUp, LoaderCircle, Wand2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { importAccounts } from "@/services/account";
+import { createAccountImportHelper, importAccounts } from "@/services/account";
 import type { ImportAccountsResult } from "@/types";
 
 const ACCOUNT_IMPORT_PLACEHOLDER = `支持账号密码:
@@ -47,6 +47,7 @@ export function AccountImportModal({
   const [accountImportDraft, setAccountImportDraft] = useState("");
   const [accountImportFileName, setAccountImportFileName] = useState("");
   const [importingAccounts, setImportingAccounts] = useState(false);
+  const [creatingImportHelper, setCreatingImportHelper] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -124,6 +125,26 @@ export function AccountImportModal({
     window.open(loginUrl, "_blank", "noopener,noreferrer");
   }
 
+  async function handleCreateImportHelper() {
+    if (creatingImportHelper) return;
+
+    try {
+      setCreatingImportHelper(true);
+      const helper = await createAccountImportHelper(provider);
+      await navigator.clipboard.writeText(helper.script);
+      onNotice?.(
+        "自动导入脚本已复制。登录站点后，在站点页面运行脚本；可读取的账号信息会自动回传 Auto_CW。"
+      );
+      handleOpenProviderLogin();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "自动导入助手生成失败，请稍后重试";
+      onNotice?.(message);
+    } finally {
+      setCreatingImportHelper(false);
+    }
+  }
+
   if (!isOpen) {
     return null;
   }
@@ -196,6 +217,19 @@ export function AccountImportModal({
               <Button size="sm" variant="outline" onClick={handleOpenProviderLogin}>
                 <ExternalLink className="h-4 w-4" />
                 打开当前站点登录
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void handleCreateImportHelper()}
+                disabled={creatingImportHelper}
+              >
+                {creatingImportHelper ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Wand2 className="h-4 w-4" />
+                )}
+                网页登录后自动导入
               </Button>
             </div>
 

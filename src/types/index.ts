@@ -196,6 +196,14 @@ export interface ImportAccountsResult {
   usernames: string[];
 }
 
+export interface AccountImportHelperResult {
+  provider: string;
+  endpoint: string;
+  script: string;
+  bookmarklet: string;
+  expiresAt: string;
+}
+
 export interface DeleteAccountResult {
   accountFile: string;
   backupFile?: string | null;
