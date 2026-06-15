@@ -479,6 +479,52 @@ router.post("/accounts/import", async (req, res, next) => {
     const providerId = getRequestProviderId(req);
     const content = typeof req.body?.content === "string" ? req.body.content : "";
     const format = req.body?.format === "json" || req.body?.format === "txt" ? req.body.format : "auto";
+    const directAccount = req.body?.account && typeof req.body.account === "object" && req.body.account.username
+      ? {
+          username: String(req.body.account.username || "").trim(),
+          ...(req.body.account.cookie ? { cookie: String(req.body.account.cookie) } : {}),
+          ...(req.body.account.token ? { token: String(req.body.account.token) } : {}),
+          ...(req.body.account.userId ? { userId: String(req.body.account.userId) } : {}),
+          ...(req.body.account.displayName ? { displayName: String(req.body.account.displayName) } : {}),
+          authType: req.body.account.authType || "cookie",
+          loginProvider: req.body.account.loginProvider || "web"
+        }
+      : null;
+
+    if (directAccount) {
+      if (!directAccount.cookie && !directAccount.token) {
+        res.status(422).json({
+          success: false,
+          message: "\u6240\u4f20\u8d26\u53f7\u5bf9\u8c61\u7f3a\u5c11 Cookie \u6216 token\uff0c\u5df2\u62d2\u7edd\u4fdd\u5b58\u3002",
+          data: null
+        });
+        return;
+      }
+
+      const accountFile = getProviderConfig(providerId).accountsFile;
+      const existingAccounts = loadAccounts(accountFile);
+      const accounts = mergeAccounts(existingAccounts, [directAccount]);
+      const backupFile = backupAccountFile(accountFile);
+      const result = saveAccounts(accounts, accountFile);
+      clearDashboardCache({ providerId });
+
+      ok(
+        res,
+        {
+          accountFile: result.accountFile,
+          backupFile,
+          count: result.count,
+          importedCount: 1,
+          previousCount: existingAccounts.length,
+          mode: "merge",
+          importSource: "browser",
+          usernames: result.accounts.map((account) => account.username)
+        },
+        `已合并导入 1 个账号，当前共 ${result.count} 个账号`
+      );
+      return;
+    }
+
     const curlImport = await parseCurlAccountContent(providerId, content);
     if (!curlImport?.account && looksLikeCurlImport(content)) {
       res.status(422).json({

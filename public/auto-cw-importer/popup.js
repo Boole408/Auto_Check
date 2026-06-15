@@ -467,7 +467,7 @@ async function importCurrentAccount() {
   if (!activeContext) return;
 
   importButton.disabled = true;
-  setStatus("正在导入到 Auto_CW...", "muted");
+  setStatus("\u6b63\u5728\u5bfc\u5165\u5230 Auto_CW...", "muted");
   let appUrl = "";
   let importPayload = null;
 
@@ -476,25 +476,84 @@ async function importCurrentAccount() {
     await saveAppUrl(appUrl);
 
     const hasCookie = Boolean(activeContext.cookieHeader);
-    const content = hasCookie
-      ? buildCurlContent(
-          activeContext.origin,
-          activeContext.provider.userEndpoints[0],
-          activeContext.cookieHeader
-        )
-      : JSON.stringify([activeContext.account], null, 2);
-    importPayload = {
-      provider: activeContext.provider.id,
-      format: hasCookie ? "auto" : "json",
-      content
-    };
+
+    if (hasCookie) {
+      const endpoint = activeContext.provider.userEndpoints[0];
+      let validatedUser = null;
+      try {
+        const resp = await fetch(`${activeContext.origin}${endpoint}`, { credentials: "include" });
+        if (resp.ok) {
+          const payload = await resp.json().catch(() => null);
+          if (payload?.success !== false) {
+            const raw = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+            if (raw && typeof raw === "object") validatedUser = raw;
+          }
+        }
+      } catch {}
+
+      if (!validatedUser) {
+        setStatus("\u6d4f\u89c8\u5668\u65e0\u6cd5\u9a8c\u8bc1\u5f53\u524d Cookie \u662f\u5426\u6709\u6548\uff0c\u5c1d\u8bd5\u670d\u52a1\u5668\u7aef\u9a8c\u8bc1...", "muted");
+      }
+
+      const userId = validatedUser ? String(
+        validatedUser.id || validatedUser.userId || validatedUser.user_id ||
+        validatedUser.data?.id || validatedUser.data?.userId || ""
+      ).trim() : "";
+      const username = validatedUser ? String(
+        validatedUser.username || validatedUser.email || validatedUser.name ||
+        validatedUser.displayName || validatedUser.display_name ||
+        validatedUser.data?.username || validatedUser.data?.email || ""
+      ).trim() : "";
+      const displayName = validatedUser ? String(
+        validatedUser.displayName || validatedUser.display_name || validatedUser.nickname ||
+        validatedUser.name || validatedUser.username ||
+        validatedUser.data?.displayName || validatedUser.data?.display_name || ""
+      ).trim() : "";
+
+      if (username) {
+        importPayload = {
+          provider: activeContext.provider.id,
+          account: {
+            username,
+            cookie: activeContext.cookieHeader,
+            ...(userId ? { userId } : {}),
+            ...(displayName ? { displayName } : {}),
+            authType: "cookie",
+            loginProvider: "web"
+          }
+        };
+      } else {
+        importPayload = {
+          provider: activeContext.provider.id,
+          format: "auto",
+          content: buildCurlContent(
+            activeContext.origin,
+            activeContext.provider.userEndpoints[0],
+            activeContext.cookieHeader
+          )
+        };
+      }
+    } else if (activeContext.account) {
+      importPayload = {
+        provider: activeContext.provider.id,
+        account: {
+          username: activeContext.account.username,
+          token: activeContext.account.token,
+          ...(activeContext.account.userId ? { userId: activeContext.account.userId } : {}),
+          ...(activeContext.account.displayName ? { displayName: activeContext.account.displayName } : {}),
+          authType: "token",
+          loginProvider: "web"
+        }
+      };
+    } else {
+      setStatus("\u6ca1\u6709\u53ef\u5bfc\u5165\u7684\u767b\u5f55\u4fe1\u606f", "error");
+      return;
+    }
 
     const response = await fetch(`${appUrl}/api/quota-monitor/accounts/import`, {
       method: "POST",
       credentials: "include",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(importPayload)
     });
     const payload = await response.json().catch(() => null);
@@ -502,23 +561,23 @@ async function importCurrentAccount() {
     if (!response.ok || payload?.success === false) {
       if (response.status === 401) {
         await openAutoCwRelay(appUrl, importPayload);
-        setStatus("扩展直连未带上 Auto_CW 登录态，已打开 Auto_CW 页面接力导入；如果看到登录页，请登录后再点一次扩展导入。", "ok");
+        setStatus("\u6269\u5c55\u76f4\u8fde\u672a\u5e26 Auto_CW \u767b\u5f55\u6001\uff0c\u5df2\u6253\u5f00 Auto_CW \u9875\u9762\u63a5\u529b\u5bfc\u5165\uff1b\u5982\u679c\u770b\u5230\u767b\u5f55\u9875\uff0c\u8bf7\u767b\u5f55\u540e\u518d\u70b9\u4e00\u6b21\u6269\u5c55\u5bfc\u5165\u3002", "ok");
         return;
       }
-      throw new Error(payload?.message || "导入失败，请稍后重试。");
+      throw new Error(payload?.message || "\u5bfc\u5165\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5");
     }
 
     const importedCount = payload?.data?.importedCount ?? 1;
     const totalCount = payload?.data?.count ?? "";
-    setStatus(`导入成功：新增/更新 ${importedCount} 个账号${totalCount ? `，当前共 ${totalCount} 个` : ""}。`, "ok");
+    setStatus(`\u5bfc\u5165\u6210\u529f\uff1a\u65b0\u589e/\u66f4\u65b0 ${importedCount} \u4e2a\u8d26\u53f7${totalCount ? `\uff0c\u5f53\u524d\u5171 ${totalCount} \u4e2a` : ""}\u3002`, "ok");
   } catch (error) {
     if (appUrl && importPayload && error instanceof TypeError) {
       await openAutoCwRelay(appUrl, importPayload);
-      setStatus("扩展直连 Auto_CW 失败，已打开 Auto_CW 页面接力导入。", "ok");
+      setStatus("\u6269\u5c55\u76f4\u8fde Auto_CW \u5931\u8d25\uff0c\u5df2\u6253\u5f00 Auto_CW \u9875\u9762\u63a5\u529b\u5bfc\u5165\u3002", "ok");
       importButton.disabled = false;
       return;
     }
-    setStatus(error instanceof Error ? error.message : "导入失败，请稍后重试。", "error");
+    setStatus(error instanceof Error ? error.message : "\u5bfc\u5165\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5", "error");
   } finally {
     importButton.disabled = false;
   }
