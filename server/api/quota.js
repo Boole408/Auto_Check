@@ -128,9 +128,50 @@ async function fetchImportedCookieUser(providerId, cookie, signal) {
   return null;
 }
 
-function buildAccountFromImportedUser(user, cookie) {
+async function fetchImportedTokenUser(providerId, token, signal) {
+  const cleanToken = String(token || "").replace(/^Bearer\s+/i, "").trim();
+  if (!cleanToken || /^sk-[A-Za-z0-9_-]+/i.test(cleanToken)) return null;
+
+  const provider = getProviderConfig(providerId);
+  const endpoints = ["/api/user/self", "/api/user/info", "/api/user"];
+  const headerSets = [
+    { Authorization: `Bearer ${cleanToken}` },
+    { "New-API-Token": cleanToken },
+    { Authorization: `Bearer ${cleanToken}`, "New-API-Token": cleanToken }
+  ];
+
+  for (const endpoint of endpoints) {
+    for (const headers of headerSets) {
+      try {
+        const response = await fetch(new URL(endpoint, provider.baseUrl), {
+          signal,
+          headers: {
+            Accept: "application/json",
+            "User-Agent": "AutoCheck/1.0",
+            ...headers
+          }
+        });
+        if ([400, 401, 403, 404, 405].includes(response.status)) continue;
+        if (!response.ok) continue;
+
+        const payload = await response.json();
+        if (payload?.success === false) continue;
+        const data = unwrap(payload) || {};
+        if (data && typeof data === "object") return data;
+      } catch {
+        // Try the next compatible account endpoint/header pair.
+      }
+    }
+  }
+
+  return null;
+}
+
+function readImportedUserFields(user, fallback = {}) {
   const userId = String(
-    readPath(user, ["id", "user_id", "userId", "user.id", "user.user_id", "user.userId"]) || ""
+    readPath(user, ["id", "user_id", "userId", "user.id", "user.user_id", "user.userId"]) ||
+      fallback.userId ||
+      ""
   ).trim();
   const displayName = sanitizeDisplayName(
     readPath(user, [
@@ -145,7 +186,7 @@ function buildAccountFromImportedUser(user, cookie) {
       "user.nickname",
       "user.name",
       "user.username"
-    ]),
+    ]) || fallback.displayName,
     userId
   );
   const username = sanitizeDisplayName(
@@ -159,16 +200,35 @@ function buildAccountFromImportedUser(user, cookie) {
       "user.username",
       "user.email",
       "user.name"
-    ]),
+    ]) || fallback.username,
     displayName || userId
   );
 
+  return { userId, displayName, username };
+}
+
+function buildAccountFromImportedUser(user, cookie) {
+  const { userId, displayName, username } = readImportedUserFields(user);
   if (!username) return null;
 
   return {
     username,
     cookie,
     authType: "cookie",
+    loginProvider: "web",
+    ...(userId ? { userId } : {}),
+    ...(displayName ? { displayName } : {})
+  };
+}
+
+function buildTokenAccountFromImportedUser(user, token, fallback = {}) {
+  const { userId, displayName, username } = readImportedUserFields(user, fallback);
+  if (!username) return null;
+
+  return {
+    username,
+    token: String(token || "").replace(/^Bearer\s+/i, "").trim(),
+    authType: "token",
     loginProvider: "web",
     ...(userId ? { userId } : {}),
     ...(displayName ? { displayName } : {})
@@ -193,6 +253,83 @@ async function parseCurlAccountContent(providerId, content) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function needsSessionValidation(account) {
+  if (!account || typeof account !== "object") return false;
+  if (account.cookie) return true;
+  if (account.token && !account.password) return true;
+  return false;
+}
+
+async function validateImportedSessionAccounts(providerId, accounts) {
+  const validatedAccounts = [];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12_000);
+
+  try {
+    for (const account of accounts) {
+      if (!needsSessionValidation(account)) {
+        validatedAccounts.push(account);
+        continue;
+      }
+
+      if (account.cookie) {
+        const user = await fetchImportedCookieUser(providerId, account.cookie, controller.signal);
+        if (!user) {
+          return {
+            ok: false,
+            message:
+              "导入内容里的 Cookie 服务器端验证失败，已拒绝保存，避免导入后不可用。请确认复制的是登录后的目标站请求，或重新用新版导入助手读取 Cookie。"
+          };
+        }
+
+        const validatedAccount = buildAccountFromImportedUser(user, account.cookie);
+        if (!validatedAccount) {
+          return {
+            ok: false,
+            message: "Cookie 已读到，但无法解析账号信息，请复制登录后的 /api/user/self 请求再导入。"
+          };
+        }
+        validatedAccounts.push(validatedAccount);
+        continue;
+      }
+
+      const cleanToken = String(account.token || "").replace(/^Bearer\s+/i, "").trim();
+      if (/^sk-[A-Za-z0-9_-]+/i.test(cleanToken)) {
+        return {
+          ok: false,
+          message:
+            "sk- 开头的是模型 API Key，不是网页登录态。已拒绝保存，LinuxDo 登录请导入目标站 Cookie 或浏览器 Copy as cURL。"
+        };
+      }
+
+      const user = await fetchImportedTokenUser(providerId, cleanToken, controller.signal);
+      if (!user) {
+        return {
+          ok: false,
+          message:
+            "扩展读取到的 token 服务器端不可用，已拒绝保存。请在目标站页面重新打开新版导入助手，必须读到 Cookie；否则请用 Network 复制 /api/user/self 的 cURL 导入。"
+        };
+      }
+
+      const validatedAccount = buildTokenAccountFromImportedUser(user, cleanToken, account);
+      if (!validatedAccount) {
+        return {
+          ok: false,
+          message: "token 已验证，但无法解析账号信息，请改用 Copy as cURL 导入。"
+        };
+      }
+      validatedAccounts.push(validatedAccount);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+
+  return {
+    ok: true,
+    accounts: validatedAccounts
+  };
 }
 
 router.use(requireAuth);
@@ -334,11 +471,11 @@ router.post("/accounts/import", async (req, res, next) => {
     const content = typeof req.body?.content === "string" ? req.body.content : "";
     const format = req.body?.format === "json" || req.body?.format === "txt" ? req.body.format : "auto";
     const curlImport = await parseCurlAccountContent(providerId, content);
-    const incomingAccounts = curlImport?.account
+    const parsedAccounts = curlImport?.account
       ? [curlImport.account]
       : parseAccountsContent(content, format);
 
-    if (!incomingAccounts.length) {
+    if (!parsedAccounts.length) {
       if (curlImport?.cookie) {
         res.status(422).json({
           success: false,
@@ -356,6 +493,17 @@ router.post("/accounts/import", async (req, res, next) => {
       });
       return;
     }
+
+    const validation = await validateImportedSessionAccounts(providerId, parsedAccounts);
+    if (!validation.ok) {
+      res.status(422).json({
+        success: false,
+        message: validation.message,
+        data: null
+      });
+      return;
+    }
+    const incomingAccounts = validation.accounts;
 
     const accountFile = getProviderConfig(providerId).accountsFile;
     const existingAccounts = loadAccounts(accountFile);

@@ -451,8 +451,16 @@ async function refreshActiveContext() {
   importButton.disabled = false;
 
   const cookieCount = countCookiePairs(cookieHeader);
-  const tokenText = account ? "已找到网页登录 token" : "未找到网页登录 token";
-  setStatus(`已识别 ${provider.label}：Cookie ${cookieCount} 个，${tokenText}。可以导入。`, "ok");
+  if (cookieCount > 0) {
+    const tokenText = account ? "同时找到页面 token" : "未找到页面 token";
+    setStatus(`已识别 ${provider.label}：Cookie ${cookieCount} 个，${tokenText}。可以导入。`, "ok");
+    return;
+  }
+
+  setStatus(
+    `已识别 ${provider.label} 页面用户，但没有读到 Cookie，只能尝试 token 导入；服务器会先验证，不可用就不会保存。`,
+    "muted"
+  );
 }
 
 async function importCurrentAccount() {
