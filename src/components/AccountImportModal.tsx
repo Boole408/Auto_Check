@@ -15,11 +15,13 @@ username,password
 username,token=your_new_api_token
 username,cookie=your_cookie
 username,token=your_new_api_token,cookie=your_cookie
+linuxdo_123456,token=your_anyrouter_token,cookie=your_cookie
 
 支持从浏览器 localStorage.user 粘贴 json:
 [
   { "username": "user1", "token": "token_value" },
-  { "username": "user2", "cookie": "session_cookie=value" }
+  { "username": "user2", "cookie": "session_cookie=value" },
+  { "username": "linuxdo_123456", "userId": "123456", "token": "token_value", "cookie": "session_cookie=value" }
 ]`;
 
 interface AccountImportModalProps {
@@ -182,7 +184,7 @@ export function AccountImportModal({
 
             <div className="flex flex-col gap-3 text-xs text-muted-foreground">
               <span>当前保存路径：{accountFile || "./accounts.txt"}</span>
-              <span>支持格式：`username,password`、`username,token=xxx`、`username,cookie=xxx`、JSON 数组对象。</span>
+              <span>支持格式：`username,password`、`username,token=xxx`、`username,cookie=xxx`、`userId=数字`、JSON 数组对象。</span>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3">

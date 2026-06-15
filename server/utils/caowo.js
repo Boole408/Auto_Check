@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import vm from "node:vm";
 import axios from "axios";
 import { getAccountFilePath, loadAccounts } from "./accountLoader.js";
 import { getProviderConfig, getProviderList, normalizeProviderId } from "./siteProviders.js";
@@ -63,11 +64,15 @@ let siteRates = {
 };
 let siteRatesExpiresAt = 0;
 let rateLimitUntil = 0;
+let wafChallengeCookie = "";
+let wafChallengeCookieExpiresAt = 0;
 
 const checkinQueue = createCheckinQueueState();
 const usageSyncQueue = createUsageSyncQueueState();
 const dashboardAlertsState = createDashboardAlertsState();
 const autoCheckinScheduler = createAutoCheckinSchedulerState();
+
+installWafChallengeInterceptors();
 
 function createQueueProgress() {
   return {
@@ -207,6 +212,163 @@ function debugLog(message, payload = {}) {
   if (process.env.CAOWO_DEBUG === "1" || process.env[`${provider.id.toUpperCase()}_DEBUG`] === "1") {
     console.warn(`[${provider.id}-debug] ${message}`, JSON.stringify(payload));
   }
+}
+
+function normalizeCookiePair(cookieText = "") {
+  return String(cookieText || "").split(";")[0].trim();
+}
+
+function mergeCookieHeader(existingCookie = "", nextCookie = "") {
+  const pairs = new Map();
+
+  for (const source of [existingCookie, nextCookie]) {
+    for (const entry of String(source || "").split(";")) {
+      const normalized = entry.trim();
+      const separatorIndex = normalized.indexOf("=");
+      if (separatorIndex <= 0) continue;
+      pairs.set(normalized.slice(0, separatorIndex), normalized.slice(separatorIndex + 1));
+    }
+  }
+
+  return Array.from(pairs, ([name, value]) => `${name}=${value}`).join("; ");
+}
+
+function readHeader(headers, name) {
+  if (!headers) return "";
+  if (typeof headers.get === "function") return headers.get(name) || headers.get(name.toLowerCase()) || "";
+  return headers[name] || headers[name.toLowerCase()] || "";
+}
+
+function writeHeader(headers, name, value) {
+  if (!headers || !value) return;
+  if (typeof headers.set === "function") {
+    headers.set(name, value);
+    return;
+  }
+  headers[name] = value;
+}
+
+function attachCookieToRequestConfig(config, cookie) {
+  const cookiePair = normalizeCookiePair(cookie);
+  if (!cookiePair) return config;
+
+  config.headers = config.headers || {};
+  const existingCookie = readHeader(config.headers, "Cookie");
+  writeHeader(config.headers, "Cookie", mergeCookieHeader(existingCookie, cookiePair));
+  return config;
+}
+
+function getActiveWafChallengeCookie() {
+  if (!wafChallengeCookie || wafChallengeCookieExpiresAt <= Date.now()) return "";
+  return wafChallengeCookie;
+}
+
+function isWafChallengePayload(payload) {
+  return (
+    typeof payload === "string" &&
+    payload.includes("acw_sc__v2") &&
+    payload.includes("var arg1=")
+  );
+}
+
+function parseCookieExpiresAt(cookieText = "") {
+  const maxAgeMatch = String(cookieText).match(/(?:^|;)\s*max-age=(\d+)/i);
+  if (maxAgeMatch) {
+    return Date.now() + Number(maxAgeMatch[1]) * 1000;
+  }
+
+  const expiresMatch = String(cookieText).match(/(?:^|;)\s*expires=([^;]+)/i);
+  if (expiresMatch) {
+    const expiresAt = Date.parse(expiresMatch[1]);
+    if (Number.isFinite(expiresAt)) return expiresAt;
+  }
+
+  return Date.now() + 55 * 60 * 1000;
+}
+
+function solveWafChallengeCookie(html = "") {
+  const script = String(html).match(/<script[^>]*>([\s\S]*?)<\/script>/i)?.[1];
+  if (!script) return "";
+
+  let cookie = "";
+  const document = {
+    get cookie() {
+      return cookie;
+    },
+    set cookie(value) {
+      cookie = value;
+    },
+    location: {
+      reload() {
+        throw new Error("WAF_RELOAD");
+      }
+    }
+  };
+  const context = {
+    document,
+    window: {},
+    Date,
+    RegExp,
+    parseInt,
+    Boolean,
+    String,
+    Math,
+    decodeURIComponent,
+    console: {
+      log() {},
+      info() {},
+      warn() {},
+      error() {},
+      debug() {}
+    }
+  };
+  context.window = context;
+
+  try {
+    vm.runInNewContext(script, context, { timeout: 2_000 });
+  } catch (error) {
+    if (error?.message !== "WAF_RELOAD") {
+      debugLog("waf-challenge-solve-failed", { message: error?.message });
+      return "";
+    }
+  }
+
+  return cookie;
+}
+
+function refreshWafChallengeCookie(payload) {
+  const solvedCookie = solveWafChallengeCookie(payload);
+  const cookiePair = normalizeCookiePair(solvedCookie);
+  if (!cookiePair) return "";
+
+  wafChallengeCookie = cookiePair;
+  wafChallengeCookieExpiresAt = parseCookieExpiresAt(solvedCookie);
+  debugLog("waf-challenge-cookie-refreshed", { expiresAt: new Date(wafChallengeCookieExpiresAt).toISOString() });
+  return cookiePair;
+}
+
+function installWafChallengeInterceptors() {
+  client.interceptors.request.use((config) => {
+    const cookie = getActiveWafChallengeCookie();
+    return cookie ? attachCookieToRequestConfig(config, cookie) : config;
+  });
+
+  client.interceptors.response.use(async (response) => {
+    if (!isWafChallengePayload(response.data) || response.config?.__wafChallengeRetried) {
+      return response;
+    }
+
+    const cookie = refreshWafChallengeCookie(response.data);
+    if (!cookie) return response;
+
+    const retryConfig = {
+      ...response.config,
+      __wafChallengeRetried: true,
+      headers: response.config.headers
+    };
+    attachCookieToRequestConfig(retryConfig, cookie);
+    return client.request(retryConfig);
+  });
 }
 
 function getNumberEnv(name, fallback) {
@@ -594,7 +756,12 @@ function pruneSessionStore(store = {}, accounts = loadAccountsWithKeys()) {
 
   for (const key of activeKeys) {
     const session = store?.[key];
-    if (!session || !hasSessionAuth(session) || session.expiresAt <= Date.now()) {
+    if (
+      !session ||
+      !hasSessionAuth(session) ||
+      session.expiresAt <= Date.now() ||
+      !isValidProviderUserId(session.userId)
+    ) {
       continue;
     }
     nextStore[key] = session;
@@ -847,7 +1014,8 @@ function roundMoney(value) {
 }
 
 function isSuccessEnvelope(payload) {
-  if (!payload || typeof payload !== "object") return true;
+  if (!payload) return true;
+  if (typeof payload !== "object") return false;
   if (payload.success === false) return false;
   if (typeof payload.code === "number" && ![0, 200].includes(payload.code)) return false;
   return true;
@@ -1145,6 +1313,21 @@ function quotaToCurrency(rawQuota, rates = siteRates) {
   return roundMoney((quota / (quotaPerUnit > 0 ? quotaPerUnit : DEFAULT_QUOTA_PER_UNIT)) * displayRate);
 }
 
+function currencyToQuota(displayValue, rates = siteRates) {
+  const value = toNumber(displayValue, 0);
+  const displayType = String(rates.quotaDisplayType || "USD").toUpperCase();
+  const quotaPerUnit = toNumber(rates.quotaPerUnit, DEFAULT_QUOTA_PER_UNIT);
+  const displayRate =
+    displayType === "USD"
+      ? toNumber(rates.usdExchangeRate, DEFAULT_USD_EXCHANGE_RATE)
+      : displayType === "CUSTOM"
+        ? toNumber(rates.customCurrencyExchangeRate, DEFAULT_CUSTOM_CURRENCY_EXCHANGE_RATE)
+        : 1;
+
+  if (displayType === "TOKENS") return value;
+  return (value / (displayRate > 0 ? displayRate : 1)) * (quotaPerUnit > 0 ? quotaPerUnit : DEFAULT_QUOTA_PER_UNIT);
+}
+
 function checkinRewardToCurrency(rawQuota, rates = siteRates) {
   return quotaToCurrency(rawQuota, rates);
 }
@@ -1387,6 +1570,35 @@ function hasImportedSessionCredentials(account) {
   return Boolean(account?.token || account?.cookie);
 }
 
+function deriveTrailingNumericUserId(account) {
+  if (!provider.deriveTrailingNumericUserId) return "";
+  const candidates = [account?.userId, account?.username, account?.displayName].filter(Boolean);
+  for (const candidate of candidates) {
+    const match = String(candidate).trim().match(/(?:^|[_-])(\d+)$/);
+    if (match) return match[1];
+  }
+  return "";
+}
+
+function resolveAccountUserId(account, fallback = account?.username) {
+  return account?.userId || deriveTrailingNumericUserId(account) || fallback || "";
+}
+
+function isValidProviderUserId(userId) {
+  if (!provider.requiresNumericUserId) return Boolean(userId);
+  return /^\d+$/.test(String(userId || ""));
+}
+
+function assertProviderUserId(account, userId) {
+  if (isValidProviderUserId(userId)) return;
+
+  throw new CaowoError(
+    `${provider.displayName} 需要数字 userId；请在导入内容里添加 userId，或使用 linuxdo_数字 这类账号名`,
+    401,
+    "AUTH_FAILED"
+  );
+}
+
 function getImportedSessionExpiresAt(account) {
   if (!account?.expiresAt) return Date.now() + DEFAULT_SESSION_TTL;
 
@@ -1407,7 +1619,8 @@ function createImportedSession(account) {
 
   const displayName =
     sanitizeDisplayName(account.displayName, account.username) || account.username;
-  const userId = account.userId || account.username;
+  const userId = resolveAccountUserId(account);
+  assertProviderUserId(account, userId);
 
   return {
     username: account.username,
@@ -1427,12 +1640,24 @@ function createImportedSession(account) {
 async function loginAccount(account, { force = false } = {}) {
   const key = sessionCacheKey(account);
   const cached = sessionCache.get(key);
-  if (!force && cached && hasSessionAuth(cached) && cached.expiresAt > Date.now()) {
+  if (
+    !force &&
+    cached &&
+    hasSessionAuth(cached) &&
+    cached.expiresAt > Date.now() &&
+    isValidProviderUserId(cached.userId)
+  ) {
     return cached;
   }
 
   const persisted = readSessionStore()[key];
-  if (!force && persisted && hasSessionAuth(persisted) && persisted.expiresAt > Date.now()) {
+  if (
+    !force &&
+    persisted &&
+    hasSessionAuth(persisted) &&
+    persisted.expiresAt > Date.now() &&
+    isValidProviderUserId(persisted.userId)
+  ) {
     sessionCache.set(key, persisted);
     return persisted;
   }
@@ -1477,7 +1702,9 @@ async function loginAccount(account, { force = false } = {}) {
     "session.token"
   ]);
   const userId =
-    readPath(data, ["id", "user_id", "userId", "user.id", "user.user_id"]) || account.username;
+    readPath(data, ["id", "user_id", "userId", "user.id", "user.user_id"]) ||
+    resolveAccountUserId(account);
+  assertProviderUserId(account, userId);
   const displayName =
     sanitizeDisplayName(
       readPath(user, ["display_name", "displayName", "nickname", "name", "username"]),
@@ -1586,11 +1813,15 @@ function normalizeCheckinStats(payload = {}) {
 }
 
 async function fetchTrendCheckinStats(session) {
+  const statsTemplate = String(provider.checkinStatsEndpoint || "").trim();
+  if (!statsTemplate) return null;
+
   const monthKeys = getRecentMonthKeys();
   const normalizedResponses = [];
 
   for (const monthKey of monthKeys) {
-    const response = await client.get(`/api/user/checkin?month=${monthKey}`, {
+    const endpoint = statsTemplate.replace("{month}", encodeURIComponent(monthKey));
+    const response = await client.get(endpoint, {
       headers: sessionHeaders(session)
     });
 
@@ -1912,7 +2143,7 @@ async function syncAccountUsage(account) {
 
 function parseRewardRaw(payload) {
   const data = unwrap(payload) || {};
-  return toNumber(
+  const directReward = toNumber(
     readPath(data, [
       "reward_quota",
       "rewardQuota",
@@ -1928,6 +2159,16 @@ function parseRewardRaw(payload) {
     ]),
     0
   );
+  if (directReward > 0) return directReward;
+
+  const message = messageFrom(payload, "");
+  const displayRewardMatch = String(message).match(/(?:\$|USD|美元|美金)\s*([\d.]+)|([\d.]+)\s*(?:\$|USD|美元|美金)/i);
+  const displayReward = toNumber(displayRewardMatch?.[1] || displayRewardMatch?.[2], NaN);
+  if (Number.isFinite(displayReward) && displayReward > 0) {
+    return currencyToQuota(displayReward);
+  }
+
+  return 0;
 }
 
 function isAlreadyCheckedMessage(message) {
@@ -2337,6 +2578,40 @@ function kickUsageSync({ priorityUsernames = [], selectedUsername = null } = {})
   return serializeUsageSyncQueue();
 }
 
+function getWebAccessPaths() {
+  return String(provider.webAccessPaths || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+async function visitProviderWebPages(session) {
+  const paths = getWebAccessPaths();
+  if (!paths.length) return;
+
+  for (const path of paths) {
+    try {
+      await client.get(path, {
+        headers: {
+          ...sessionHeaders(session),
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+      });
+    } catch (error) {
+      debugLog("web-access-visit-failed", {
+        username: session.username,
+        path,
+        status: error?.status || error?.response?.status,
+        message: error?.message
+      });
+    }
+  }
+}
+
+function getCheckinEndpoint() {
+  return String(provider.checkinEndpoint || "/api/user/checkin").trim() || "/api/user/checkin";
+}
+
 async function fastCheckinAccount(account) {
   const state = getAccountState(account);
   if (state.checkin.signedToday) {
@@ -2349,6 +2624,8 @@ async function fastCheckinAccount(account) {
   }
 
   return withAccountSession(account, async (session) => {
+    await visitProviderWebPages(session);
+
     try {
       const checkinStats = await fetchTrendCheckinStats(session);
       if (checkinStats?.signedToday) {
@@ -2370,7 +2647,7 @@ async function fastCheckinAccount(account) {
       });
     }
 
-    const response = await client.post("/api/user/checkin", null, {
+    const response = await client.post(getCheckinEndpoint(), null, {
       headers: sessionHeaders(session)
     });
 

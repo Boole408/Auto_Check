@@ -66,7 +66,12 @@ const PROVIDER_DEFS = {
     defaultAccountsFile: "accounts.anyrouter.txt",
     defaultRateLimitCooldownMs: 180_000,
     defaultUsageSyncDelayMs: 4_000,
-    defaultCurrencySymbolOverride: "$"
+    defaultCurrencySymbolOverride: "$",
+    defaultCheckinEndpoint: "/api/user/sign_in",
+    defaultCheckinStatsEndpoint: "",
+    defaultRequiresNumericUserId: true,
+    defaultDeriveTrailingNumericUserId: true,
+    defaultWebAccessPaths: "/,/console"
   }
 };
 
@@ -158,6 +163,23 @@ function buildProviderConfig(def) {
       def,
       "CURRENCY_SYMBOL_OVERRIDE",
       def.defaultCurrencySymbolOverride || ""
+    ),
+    checkinEndpoint: getEnv(def, "CHECKIN_ENDPOINT", def.defaultCheckinEndpoint || "/api/user/checkin"),
+    checkinStatsEndpoint: getEnv(
+      def,
+      "CHECKIN_STATS_ENDPOINT",
+      def.defaultCheckinStatsEndpoint ?? "/api/user/checkin?month={month}"
+    ),
+    webAccessPaths: getEnv(def, "WEB_ACCESS_PATHS", def.defaultWebAccessPaths || ""),
+    requiresNumericUserId: getBooleanEnv(
+      def,
+      "REQUIRES_NUMERIC_USER_ID",
+      Boolean(def.defaultRequiresNumericUserId)
+    ),
+    deriveTrailingNumericUserId: getBooleanEnv(
+      def,
+      "DERIVE_TRAILING_NUMERIC_USER_ID",
+      Boolean(def.defaultDeriveTrailingNumericUserId)
     ),
     autoCheckinEnabled: getBooleanEnv(def, "AUTO_CHECKIN_ENABLED", true),
     autoCheckinTime: getEnv(def, "AUTO_CHECKIN_TIME", DEFAULT_AUTO_CHECKIN_TIME),
