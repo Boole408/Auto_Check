@@ -1,16 +1,15 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { CheckCircle2, LoaderCircle, RotateCcw } from "lucide-react";
+import { CheckCircle2, LoaderCircle, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   getAccountInitial,
   getAccountQueueHint,
   getSingleActionLabel,
+  getTodayUsedStatusText,
   getTodayUsedText,
-  money,
-  percent,
-  usageTone
+  money
 } from "@/lib/formatters";
 import type { AccountQuota, CheckinQueueState, UsageSyncState } from "@/types";
 import {
@@ -37,17 +36,20 @@ const itemVariants = {
 };
 
 const ACCOUNT_TABLE_GRID =
-  "xl:grid-cols-[minmax(0,2.35fr)_0.92fr_0.9fr_0.96fr_1.02fr_1.04fr_0.9fr_96px_132px]";
+  "xl:grid-cols-[minmax(0,2.6fr)_0.9fr_0.9fr_1fr_1fr_84px_164px]";
 
 interface AccountListItemProps {
   account: AccountQuota;
   isSelected: boolean;
   coolingDown: boolean;
   isWorking: boolean;
+  isDeleting: boolean;
+  deleteLocked: boolean;
   checkinQueue: CheckinQueueState | undefined;
   usageQueue: UsageSyncState | undefined;
   onSelect: (username: string) => void;
   onSingleCheckin: (account: AccountQuota) => Promise<void>;
+  onDeleteAccount: (account: AccountQuota) => Promise<void>;
 }
 
 const AccountListItem = memo(function AccountListItem({
@@ -55,12 +57,23 @@ const AccountListItem = memo(function AccountListItem({
   isSelected,
   coolingDown,
   isWorking,
+  isDeleting,
+  deleteLocked,
   checkinQueue,
   usageQueue,
   onSelect,
-  onSingleCheckin
+  onSingleCheckin,
+  onDeleteAccount
 }: AccountListItemProps) {
-  const tone = usageTone(account.usagePercent);
+  const accountLabel = account.displayName || account.username;
+  const isQueueWorking =
+    checkinQueue?.status === "running" && checkinQueue.currentUsername === account.username;
+  const deleteDisabled = isDeleting || deleteLocked || isWorking || isQueueWorking;
+  const deleteTitle = isDeleting
+    ? `正在删除账号 ${accountLabel}`
+    : isQueueWorking
+      ? "账号正在签到，稍后删除"
+      : `删除账号 ${accountLabel}`;
 
   return (
     <motion.article
@@ -90,31 +103,42 @@ const AccountListItem = memo(function AccountListItem({
               </div>
             </div>
           </button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-6.5 px-3 text-[10px]"
-            onClick={() => onSelect(account.username)}
-          >
-            查看
-          </Button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6.5 px-3 text-[10px]"
+              onClick={() => onSelect(account.username)}
+            >
+              查看
+            </Button>
+            <Button
+              size="icon"
+              variant="outline"
+              className="h-[1.625rem] w-[1.625rem] px-0 text-[#C43B3B] hover:border-[#E16868] hover:bg-[#FFF1F1] hover:text-[#B42323] dark:text-[#F28B8B] dark:hover:border-[#F28B8B] dark:hover:bg-[#2B1717]"
+              disabled={deleteDisabled}
+              onClick={() => void onDeleteAccount(account)}
+              aria-label={deleteTitle}
+              title={deleteTitle}
+            >
+              {isDeleting ? (
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5" />
+              )}
+            </Button>
+          </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2 text-[10px]">
+        <div className="grid grid-cols-2 gap-2 text-[10px]">
           <div>
-            <p className="text-[#71867F] dark:text-[#89A39B]">已用</p>
+            <p className="text-[#71867F] dark:text-[#89A39B]">今日已用</p>
             <p className="mt-0.5 font-semibold text-[#102A24] dark:text-[#E7F7F0]">
               {getTodayUsedText(account)}
             </p>
           </div>
           <div>
-            <p className="text-[#71867F] dark:text-[#89A39B]">总额度</p>
-            <p className="mt-0.5 font-semibold text-[#102A24] dark:text-[#E7F7F0]">
-              {money(account.totalQuota, account.currencySymbol)}
-            </p>
-          </div>
-          <div>
-            <p className="text-[#71867F] dark:text-[#89A39B]">剩余额度</p>
+            <p className="text-[#71867F] dark:text-[#89A39B]">当前可用</p>
             <p className="mt-0.5 font-semibold text-[#102A24] dark:text-[#E7F7F0]">
               {money(account.remainingQuota, account.currencySymbol)}
             </p>
@@ -124,18 +148,20 @@ const AccountListItem = memo(function AccountListItem({
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0 flex-1 rounded-[0.9rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.78)] px-3 py-1.5 dark:border-[#294038] dark:bg-[rgba(20,31,27,0.86)]">
             <div className="flex items-center justify-between gap-2 text-[10px] text-[#71867F] dark:text-[#89A39B]">
-              <span>使用率</span>
-              <span className={cn("font-semibold", tone.text)}>{percent(account.usagePercent)}</span>
+              <span>后台状态</span>
+              <span className="font-semibold">
+                {getTodayUsedStatusText(account.todayUsedStatus)}
+              </span>
             </div>
             <p className="mt-1 truncate text-[10px] text-[#9AABA5] dark:text-[#667B73]">
-              已用 {getTodayUsedText(account)}
+              {getAccountQueueHint(account, checkinQueue, usageQueue)}
             </p>
           </div>
           <Button
             size="sm"
             variant={account.signedToday ? "secondary" : "default"}
             className="h-6.5 px-3 text-[10px]"
-            disabled={account.signedToday || coolingDown || isWorking}
+            disabled={account.signedToday || coolingDown || isWorking || isDeleting}
             onClick={() => void onSingleCheckin(account)}
           >
             {isWorking ? (
@@ -179,15 +205,7 @@ const AccountListItem = memo(function AccountListItem({
           {getTodayUsedText(account)}
         </div>
         <div className="text-center font-semibold text-[#102A24] dark:text-[#E7F7F0]">
-          {money(account.totalQuota, account.currencySymbol)}
-        </div>
-        <div className="text-center font-semibold text-[#102A24] dark:text-[#E7F7F0]">
           {money(account.remainingQuota, account.currencySymbol)}
-        </div>
-        <div className="min-w-0 text-center">
-          <span className={cn("block whitespace-nowrap font-semibold", tone.text)}>
-            {percent(account.usagePercent)}
-          </span>
         </div>
         <Button
           size="sm"
@@ -197,20 +215,37 @@ const AccountListItem = memo(function AccountListItem({
         >
           查看
         </Button>
-        <Button
-          size="sm"
-          variant={account.signedToday ? "secondary" : "default"}
-          className="h-6 justify-self-center px-3 text-[10px]"
-          disabled={account.signedToday || coolingDown || isWorking}
-          onClick={() => void onSingleCheckin(account)}
-        >
-          {isWorking ? (
-            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <CheckCircle2 className="h-3.5 w-3.5" />
-          )}
-          {getSingleActionLabel(account, isWorking, Boolean(coolingDown))}
-        </Button>
+        <div className="flex items-center justify-center gap-1.5">
+          <Button
+            size="sm"
+            variant={account.signedToday ? "secondary" : "default"}
+            className="h-6 px-3 text-[10px]"
+            disabled={account.signedToday || coolingDown || isWorking || isDeleting}
+            onClick={() => void onSingleCheckin(account)}
+          >
+            {isWorking ? (
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <CheckCircle2 className="h-3.5 w-3.5" />
+            )}
+            {getSingleActionLabel(account, isWorking, Boolean(coolingDown))}
+          </Button>
+          <Button
+            size="icon"
+            variant="outline"
+            className="h-6 w-6 shrink-0 px-0 text-[#C43B3B] hover:border-[#E16868] hover:bg-[#FFF1F1] hover:text-[#B42323] dark:text-[#F28B8B] dark:hover:border-[#F28B8B] dark:hover:bg-[#2B1717]"
+            disabled={deleteDisabled}
+            onClick={() => void onDeleteAccount(account)}
+            aria-label={deleteTitle}
+            title={deleteTitle}
+          >
+            {isDeleting ? (
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Trash2 className="h-3.5 w-3.5" />
+            )}
+          </Button>
+        </div>
       </div>
     </motion.article>
   );
@@ -237,10 +272,35 @@ export const AccountListPanel = memo(function AccountListPanel({
   onFilterChange,
   onSelect
 }: AccountListPanelProps) {
-  const { handleSingleCheckin, handleCheckinAll, workingAccount, workingScope } =
-    useQuotaMonitorActions();
+  const {
+    handleSingleCheckin,
+    handleCheckinAll,
+    handleDeleteAccount,
+    workingAccount,
+    workingScope,
+    deletingAccount
+  } = useQuotaMonitorActions();
   const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
   const failedAccountsCount = checkinQueue?.progress.failed ?? 0;
+
+  const handleDeleteClick = useCallback(
+    async (account: AccountQuota) => {
+      const accountLabel =
+        account.displayName && account.displayName !== account.username
+          ? `${account.displayName}（${account.username}）`
+          : account.username;
+      const confirmed = window.confirm(
+        `确认删除账号 ${accountLabel}？删除前会自动备份账号文件。`
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      await handleDeleteAccount(account);
+    },
+    [handleDeleteAccount]
+  );
 
   useEffect(() => {
     if (filter === "checked") {
@@ -341,9 +401,7 @@ export const AccountListPanel = memo(function AccountListPanel({
                   <span className="text-center">签到</span>
                   <span className="text-center">用量</span>
                   <span className="text-center">今日已用</span>
-                  <span className="text-center">总额度</span>
-                  <span className="text-center">剩余额度</span>
-                  <span className="text-center">使用率</span>
+                  <span className="text-center">当前可用</span>
                   <span className="text-center">查看</span>
                   <span className="text-center">操作</span>
                 </div>
@@ -355,10 +413,13 @@ export const AccountListPanel = memo(function AccountListPanel({
                     isSelected={selectedUsername === account.username}
                     coolingDown={checkinQueue?.status === "cooldown"}
                     isWorking={workingAccount === account.username}
+                    isDeleting={deletingAccount === account.username}
+                    deleteLocked={deletingAccount !== null && deletingAccount !== account.username}
                     checkinQueue={checkinQueue}
                     usageQueue={usageQueue}
                     onSelect={onSelect}
                     onSingleCheckin={handleSingleCheckin}
+                    onDeleteAccount={handleDeleteClick}
                   />
                 ))}
               </div>

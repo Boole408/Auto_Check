@@ -100,6 +100,44 @@ router.post("/accounts/:username/checkin", async (req, res, next) => {
   }
 });
 
+router.delete("/accounts/:username", (req, res, next) => {
+  try {
+    const providerId = getRequestProviderId(req);
+    const username = decodeURIComponent(req.params.username);
+    const accountFile = getProviderConfig(providerId).accountsFile;
+    const existingAccounts = loadAccounts(accountFile);
+    const nextAccounts = existingAccounts.filter((account) => account.username !== username);
+
+    if (nextAccounts.length === existingAccounts.length) {
+      res.status(404).json({
+        success: false,
+        message: "账号不存在，请检查当前站点账号文件",
+        data: null
+      });
+      return;
+    }
+
+    const backupFile = backupAccountFile(accountFile);
+    const result = saveAccounts(nextAccounts, accountFile);
+    clearDashboardCache({ providerId });
+
+    ok(
+      res,
+      {
+        accountFile: result.accountFile,
+        backupFile,
+        count: result.count,
+        previousCount: existingAccounts.length,
+        deletedUsername: username,
+        usernames: result.accounts.map((account) => account.username)
+      },
+      `已删除账号 ${username}，当前共 ${result.count} 个账号`
+    );
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post("/checkin-all", async (req, res, next) => {
   try {
     const providerId = getRequestProviderId(req);

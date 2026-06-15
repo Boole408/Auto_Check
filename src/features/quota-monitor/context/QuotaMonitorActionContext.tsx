@@ -10,8 +10,10 @@ import type { AccountQuota, CheckinScope } from "@/types";
 interface QuotaMonitorActionContextValue {
   handleSingleCheckin: (account: AccountQuota) => Promise<void>;
   handleCheckinAll: (scope: CheckinScope) => Promise<void>;
+  handleDeleteAccount: (account: AccountQuota) => Promise<void>;
   workingAccount: string | null;
   workingScope: CheckinScope | null;
+  deletingAccount: string | null;
 }
 
 const QuotaMonitorActionContext = createContext<QuotaMonitorActionContextValue | null>(null);
@@ -29,18 +31,29 @@ export function QuotaMonitorActionProvider({
   const {
     handleSingleCheckin,
     handleCheckinAll,
+    handleDeleteAccount,
     workingAccount,
-    workingScope
+    workingScope,
+    deletingAccount
   } = useCheckin({ provider, onNotice });
 
   const value = useMemo<QuotaMonitorActionContextValue>(
     () => ({
       handleSingleCheckin,
       handleCheckinAll,
+      handleDeleteAccount,
       workingAccount,
-      workingScope
+      workingScope,
+      deletingAccount
     }),
-    [handleSingleCheckin, handleCheckinAll, workingAccount, workingScope]
+    [
+      handleSingleCheckin,
+      handleCheckinAll,
+      handleDeleteAccount,
+      workingAccount,
+      workingScope,
+      deletingAccount
+    ]
   );
 
   return (

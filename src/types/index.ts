@@ -189,3 +189,12 @@ export interface ImportAccountsResult {
   mode?: "merge" | "replace";
   usernames: string[];
 }
+
+export interface DeleteAccountResult {
+  accountFile: string;
+  backupFile?: string | null;
+  count: number;
+  previousCount: number;
+  deletedUsername: string;
+  usernames: string[];
+}

@@ -30,7 +30,7 @@ const ANALYSIS_TABS: Array<{
     key: "comparison",
     label: "账号额度对比",
     title: "账号额度对比",
-    description: "对比各账号今日已用与剩余额度，默认只展开一张图。"
+    description: "对比各账号今日已用与当前可用额度，默认只展开一张图。"
   },
   {
     key: "checkinTrend",
@@ -102,7 +102,7 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
               <div>
                 <CardTitle className="text-[1.08rem] text-[#102A24] dark:text-[#E7F7F0]">数据分析</CardTitle>
                 <CardDescription className="mt-1 text-[12px] text-[#71867F] dark:text-[#8DA69E]">
-                  对比总账号今日已用与剩余额度，默认只展示一个紧凑图表。
+                  对比各账号今日已用与当前可用额度，默认只展示一个紧凑图表。
                 </CardDescription>
               </div>
               <Badge variant="outline" className="px-3 py-1 text-[11px]">
@@ -143,7 +143,7 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
                 </span>
                 <span className="inline-flex items-center gap-1.5">
                   <span className="h-2 w-2 rounded-full" style={{ backgroundColor: chartRemainingColor }} />
-                  剩余额度
+                  当前可用
                 </span>
               </>
             ) : (
@@ -200,7 +200,7 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
                               className="flex items-center justify-between gap-4 text-sm font-semibold"
                               style={{ color: chartTooltipValueColor }}
                             >
-                              <span>剩余额度</span>
+                              <span>当前可用</span>
                               <span>
                                 {remainingQuotaRawValue == null
                                   ? "待同步"
@@ -215,7 +215,7 @@ export const QuotaAnalysisPanel = memo(function QuotaAnalysisPanel({
                   <Bar dataKey="todayUsed" name="今日已用" fill={chartUsedColor} radius={[6, 6, 0, 0]} maxBarSize={20} />
                   <Bar
                     dataKey="remainingQuota"
-                    name="剩余额度"
+                    name="当前可用"
                     fill={chartRemainingColor}
                     radius={[6, 6, 0, 0]}
                     maxBarSize={20}

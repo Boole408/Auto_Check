@@ -301,6 +301,7 @@ linuxdo_123456,token=your_anyrouter_token,cookie=your_cookie
 | `POST` | `/api/quota-monitor/accounts/:username/checkin` | 单账号签到 |
 | `POST` | `/api/quota-monitor/checkin-all` | 批量签到 |
 | `POST` | `/api/quota-monitor/accounts/import` | 合并导入当前站点账号 |
+| `DELETE` | `/api/quota-monitor/accounts/:username` | 删除当前站点单个账号并自动备份 |
 
 统一返回结构：
 

@@ -1,5 +1,5 @@
 import { apiClient, unwrapApiEnvelope } from "@/lib/axios";
-import type { ApiEnvelope, CheckinResult, ImportAccountsResult } from "@/types";
+import type { ApiEnvelope, CheckinResult, DeleteAccountResult, ImportAccountsResult } from "@/types";
 
 function providerQuery(provider = "muyuan") {
   return `?provider=${encodeURIComponent(provider)}`;
@@ -24,6 +24,14 @@ export async function importAccounts(payload: {
       ...payload,
       provider: payload.provider || "muyuan"
     }
+  );
+
+  return unwrapApiEnvelope(response);
+}
+
+export async function deleteAccount(username: string, provider = "muyuan") {
+  const response = await apiClient.delete<ApiEnvelope<DeleteAccountResult>>(
+    `/api/quota-monitor/accounts/${encodeURIComponent(username)}${providerQuery(provider)}`
   );
 
   return unwrapApiEnvelope(response);

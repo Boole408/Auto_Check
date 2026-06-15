@@ -4,7 +4,6 @@ import { Activity, Check, CheckCircle2, Clock3, Copy, KeyRound, LoaderCircle, Re
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
@@ -22,9 +21,7 @@ import {
   getTodayUsedStatusText,
   getTodayUsedText,
   getUsageSourceText,
-  money,
-  percent,
-  usageTone
+  money
 } from "@/lib/formatters";
 import type { CheckinQueueState, QuotaDashboard, UsageSyncState } from "@/types";
 import {
@@ -62,7 +59,6 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
   const detailExpanded =
     selectedAccount != null && expandedDetailUsername === selectedAccount.username;
 
-  const selectedUsageTone = usageTone(selectedAccount?.usagePercent ?? 0);
   const selectedApiKey = selectedAccount?.apiKey?.trim();
   const handleCopyApiKey = async () => {
     if (!selectedApiKey) return;
@@ -79,9 +75,9 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
           hint: getUsageSourceText(selectedAccount)
         },
         {
-          label: "剩余额度",
+          label: "当前可用",
           value: money(selectedAccount.remainingQuota, selectedAccount.currencySymbol),
-          hint: `总额度 ${money(selectedAccount.totalQuota, selectedAccount.currencySymbol)}`
+          hint: "站点当前余额"
         },
         {
           label: "最近签到收益",
@@ -131,16 +127,6 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
           label: "签到来源",
           value: getCheckinSourceText(selectedAccount),
           hint: "本地缓存与远程确认来源"
-        },
-        {
-          label: "总额度",
-          value: money(selectedAccount.totalQuota, selectedAccount.currencySymbol),
-          hint: `账号余额 ${money(selectedAccount.balance, selectedAccount.currencySymbol)}`
-        },
-        {
-          label: "使用率",
-          value: percent(selectedAccount.usagePercent),
-          hint: "按总额度换算"
         },
         {
           label: "用量状态",
@@ -217,17 +203,6 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
                   ))}
                 </div>
 
-                <div className="mt-3">
-                  <div className="flex items-center justify-between gap-3 text-[11px] text-white/82">
-                    <span>使用率进度</span>
-                    <span>{percent(selectedAccount.usagePercent)}</span>
-                  </div>
-                  <Progress
-                    value={selectedAccount.usagePercent}
-                    indicatorClassName={selectedUsageTone.bar}
-                    className="mt-1.5 h-2 bg-white/18"
-                  />
-                </div>
               </div>
 
               <div className="grid auto-rows-fr gap-2 sm:grid-cols-2">

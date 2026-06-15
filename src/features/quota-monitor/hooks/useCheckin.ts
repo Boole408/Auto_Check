@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/axios";
-import { checkinAccount } from "@/services/account";
+import { checkinAccount, deleteAccount } from "@/services/account";
 import { checkinAll } from "@/services/quota";
 import { quotaMonitorQueryKey } from "@/features/quota-monitor/hooks/useQuotaData";
 import type { AccountQuota, CheckinScope } from "@/types";
@@ -66,6 +66,21 @@ export function useCheckin({ provider = "muyuan", onNotice }: UseCheckinOptions 
     }
   });
 
+  const {
+    mutateAsync: mutateDeleteAccount,
+    isPending: isDeleteAccountPending,
+    variables: deleteAccountVariables
+  } = useMutation({
+    mutationFn: (username: string) => deleteAccount(username, provider),
+    onSuccess: async (result) => {
+      onNotice?.(`已删除账号 ${result.deletedUsername}，当前共 ${result.count} 个账号`);
+      await invalidateQuotaMonitor();
+    },
+    onError: (error) => {
+      onNotice?.(getCheckinErrorMessage(error, "账号删除失败"));
+    }
+  });
+
   const handleSingleCheckin = useCallback(
     async (account: AccountQuota) => {
       if (account.signedToday) {
@@ -84,10 +99,19 @@ export function useCheckin({ provider = "muyuan", onNotice }: UseCheckinOptions 
     [mutateCheckinAll]
   );
 
+  const handleDeleteAccount = useCallback(
+    async (account: AccountQuota) => {
+      await mutateDeleteAccount(account.username);
+    },
+    [mutateDeleteAccount]
+  );
+
   return {
     handleSingleCheckin,
     handleCheckinAll,
+    handleDeleteAccount,
     workingAccount: isSingleCheckinPending ? (singleCheckinVariables ?? null) : null,
-    workingScope: isCheckinAllPending ? (checkinAllVariables ?? null) : null
+    workingScope: isCheckinAllPending ? (checkinAllVariables ?? null) : null,
+    deletingAccount: isDeleteAccountPending ? (deleteAccountVariables ?? null) : null
   };
 }
