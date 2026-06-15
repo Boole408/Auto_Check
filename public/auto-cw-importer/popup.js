@@ -446,7 +446,8 @@ async function refreshActiveContext() {
     provider,
     origin,
     cookieHeader,
-    account
+    account,
+    user: pageContext?.user || null
   };
   importButton.disabled = false;
 
@@ -478,22 +479,7 @@ async function importCurrentAccount() {
     const hasCookie = Boolean(activeContext.cookieHeader);
 
     if (hasCookie) {
-      const endpoint = activeContext.provider.userEndpoints[0];
-      let validatedUser = null;
-      try {
-        const resp = await fetch(`${activeContext.origin}${endpoint}`, { credentials: "include" });
-        if (resp.ok) {
-          const payload = await resp.json().catch(() => null);
-          if (payload?.success !== false) {
-            const raw = payload?.data && typeof payload.data === "object" ? payload.data : payload;
-            if (raw && typeof raw === "object") validatedUser = raw;
-          }
-        }
-      } catch {}
-
-      if (!validatedUser) {
-        setStatus("\u6d4f\u89c8\u5668\u65e0\u6cd5\u9a8c\u8bc1\u5f53\u524d Cookie \u662f\u5426\u6709\u6548\uff0c\u5c1d\u8bd5\u670d\u52a1\u5668\u7aef\u9a8c\u8bc1...", "muted");
-      }
+      const validatedUser = activeContext.user;
 
       const userId = validatedUser ? String(
         validatedUser.id || validatedUser.userId || validatedUser.user_id ||
