@@ -1,6 +1,5 @@
 import { apiClient, unwrapApiEnvelope } from "@/lib/axios";
 import type {
-  AccountImportHelperResult,
   ApiEnvelope,
   CheckinResult,
   DeleteAccountResult,
@@ -30,15 +29,6 @@ export async function importAccounts(payload: {
       ...payload,
       provider: payload.provider || "muyuan"
     }
-  );
-
-  return unwrapApiEnvelope(response);
-}
-
-export async function createAccountImportHelper(provider = "muyuan") {
-  const response = await apiClient.post<ApiEnvelope<AccountImportHelperResult>>(
-    "/api/quota-monitor/accounts/import-helper",
-    { provider }
   );
 
   return unwrapApiEnvelope(response);

@@ -1,5 +1,4 @@
 import { memo, useMemo, useState } from "react";
-import { motion } from "framer-motion";
 import {
   Activity,
   Check,
@@ -188,7 +187,7 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
     : [];
 
   return (
-    <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="shrink-0">
+    <section className="shrink-0">
       <Card className="border-[#DDEAE5] bg-[rgba(255,255,255,0.86)] shadow-[0_12px_32px_rgba(16,42,36,0.06)] dark:border-[#233A33] dark:bg-[rgba(18,28,24,0.88)] dark:shadow-[0_16px_32px_rgba(0,0,0,0.3)]">
         <CardHeader className="pb-2.5">
           <div className="flex items-start justify-between gap-3">
@@ -216,7 +215,7 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
         </CardHeader>
         <CardContent className="pt-0">
           {selectedAccount ? (
-            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-2.5">
+            <div className="space-y-2.5">
               <div className="rounded-[1.18rem] border border-white/20 bg-[linear-gradient(135deg,#1E7E63_0%,#22A87F_50%,#2DC495_100%)] p-3.5 text-white shadow-[0_14px_32px_rgba(0,0,0,0.24)] dark:border-white/14">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-3">
@@ -341,7 +340,7 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
                   ))}
                 </div>
               ) : null}
-            </motion.div>
+            </div>
           ) : (
             <div className="rounded-[1.1rem] border border-dashed border-[#DDEAE5] bg-[rgba(255,255,255,0.72)] p-8 text-center text-sm text-muted-foreground dark:border-[#294038] dark:bg-[rgba(18,28,24,0.82)]">
               选择账号后显示详情。
@@ -349,6 +348,6 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
           )}
         </CardContent>
       </Card>
-    </motion.section>
+    </section>
   );
 });

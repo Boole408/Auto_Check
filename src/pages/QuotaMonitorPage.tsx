@@ -348,9 +348,7 @@ export default function QuotaMonitorPage({
         </div>
 
         <div className="relative flex min-h-screen w-full flex-col gap-3 px-4 py-4 sm:px-6">
-          <motion.header
-            initial={{ opacity: 0, y: -16 }}
-            animate={{ opacity: 1, y: 0 }}
+          <header
             className="flex shrink-0 flex-col gap-3 rounded-[1.55rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.9)] px-4 py-3 shadow-[0_12px_32px_rgba(16,42,36,0.06)] backdrop-blur-md dark:border-[#233A33] dark:bg-[rgba(18,28,24,0.88)] dark:shadow-[0_16px_32px_rgba(0,0,0,0.32)] lg:flex-row lg:items-center lg:justify-between"
           >
             <div className="min-w-0">
@@ -449,12 +447,10 @@ export default function QuotaMonitorPage({
                 checkinQueue={checkinQueue}
               />
             </div>
-          </motion.header>
+          </header>
 
           {condensedAlerts.length ? (
-            <motion.div
-              initial={{ opacity: 0, y: -8 }}
-              animate={{ opacity: 1, y: 0 }}
+            <div
               className="flex shrink-0 flex-wrap items-center gap-2 rounded-[1.2rem] border border-[#DDEAE5] bg-[rgba(255,255,255,0.86)] px-3 py-2 shadow-[0_10px_22px_rgba(16,42,36,0.05)] dark:border-[#233A33] dark:bg-[rgba(19,31,27,0.88)] dark:shadow-[0_14px_28px_rgba(0,0,0,0.28)]"
             >
               {condensedAlerts.map((item) => (
@@ -462,7 +458,7 @@ export default function QuotaMonitorPage({
                   {item.label}：{item.value}
                 </Badge>
               ))}
-            </motion.div>
+            </div>
           ) : null}
 
           <div className="grid gap-2.5 xl:grid-cols-12 xl:items-stretch">

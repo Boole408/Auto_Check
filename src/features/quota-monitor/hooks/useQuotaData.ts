@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getQuotaMonitor, getQuotaProviders } from "@/services/quota";
 
 const QUOTA_MONITOR_REFETCH_INTERVAL_MS = 30_000;
@@ -32,6 +32,8 @@ export function useQuotaData(provider: string, selectedUsername?: string | null)
         selectedUsername: selectedUsername || null
       }),
     refetchInterval: QUOTA_MONITOR_REFETCH_INTERVAL_MS,
+    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
     staleTime: 10_000
   });
 }

@@ -1,5 +1,4 @@
 import { memo, useCallback, useEffect, useState } from "react";
-import { motion } from "framer-motion";
 import { CheckCircle2, LoaderCircle, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,19 +20,6 @@ import {
 } from "@/features/quota-monitor/components/shared";
 import { useQuotaMonitorActions } from "@/features/quota-monitor/context/QuotaMonitorActionContext";
 import { cn } from "@/lib/utils";
-
-const listVariants = {
-  hidden: { opacity: 0 },
-  show: {
-    opacity: 1,
-    transition: { staggerChildren: 0.06 }
-  }
-};
-
-const itemVariants = {
-  hidden: { opacity: 0, y: 20 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.3 } }
-};
 
 const ACCOUNT_TABLE_GRID =
   "xl:grid-cols-[minmax(0,2.6fr)_0.9fr_0.9fr_1fr_1fr_84px_164px]";
@@ -76,8 +62,7 @@ const AccountListItem = memo(function AccountListItem({
       : `删除账号 ${accountLabel}`;
 
   return (
-    <motion.article
-      variants={itemVariants}
+    <article
       className={cn(
         "rounded-[0.96rem] border border-[#E6EFEB] bg-[rgba(255,255,255,0.82)] shadow-[0_6px_16px_rgba(16,42,36,0.04)] transition-colors hover:bg-[#F3FBF7] dark:border-[#263E37] dark:bg-[rgba(19,31,27,0.8)] dark:hover:bg-[#15251F]",
         isSelected && "border-[#BFE8DA] shadow-[0_10px_18px_rgba(52,199,154,0.12)]"
@@ -247,7 +232,7 @@ const AccountListItem = memo(function AccountListItem({
           </Button>
         </div>
       </div>
-    </motion.article>
+    </article>
   );
 });
 
@@ -309,7 +294,7 @@ export const AccountListPanel = memo(function AccountListPanel({
   }, [filter]);
 
   return (
-    <motion.section variants={listVariants} initial="hidden" animate="show" className="flex-1">
+    <section className="flex-1">
       <Card className="flex h-full flex-col border-[#DDEAE5] bg-[rgba(255,255,255,0.86)] shadow-[0_12px_32px_rgba(16,42,36,0.06)] dark:border-[#233A33] dark:bg-[rgba(18,28,24,0.88)] dark:shadow-[0_16px_32px_rgba(0,0,0,0.3)]">
         <CardHeader className="pb-2.5">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
@@ -431,6 +416,6 @@ export const AccountListPanel = memo(function AccountListPanel({
           )}
         </CardContent>
       </Card>
-    </motion.section>
+    </section>
   );
 });
