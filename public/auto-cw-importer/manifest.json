@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Auto_CW 导入助手",
-  "version": "1.0.0",
-  "description": "从已登录的目标站点读取 Cookie，并快速导入到 Auto_CW。",
-  "permissions": ["activeTab", "cookies", "storage"],
+  "version": "1.0.1",
+  "description": "从已登录的目标站点读取 Cookie 或网页登录态，并快速导入到 Auto_CW。",
+  "permissions": ["activeTab", "cookies", "scripting", "storage"],
   "host_permissions": [
     "https://autocw.ccwu.cc/*",
     "http://localhost:*/*",

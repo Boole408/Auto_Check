@@ -46,6 +46,7 @@ import {
   SelectTrigger,
   SelectValue
 } from "@/components/ui/select";
+import { importAccounts } from "@/services/account";
 import {
   getCheckinActionLabel,
   matchesFilter,
@@ -68,6 +69,41 @@ const LazyQuotaAnalysisPanel = lazy(async () => {
   const module = await import("@/features/quota-monitor/components/QuotaAnalysisPanel");
   return { default: module.QuotaAnalysisPanel };
 });
+
+const EXTENSION_IMPORT_HASH_PREFIX = "#auto-cw-import=";
+
+type ExtensionImportPayload = {
+  provider: string;
+  format: "txt" | "json" | "auto";
+  content: string;
+};
+
+function decodeBase64UrlJson(value: string) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const bytes = Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function readExtensionImportPayload(hash = window.location.hash): ExtensionImportPayload | null {
+  if (!hash.startsWith(EXTENSION_IMPORT_HASH_PREFIX)) return null;
+
+  const parsed = decodeBase64UrlJson(
+    decodeURIComponent(hash.slice(EXTENSION_IMPORT_HASH_PREFIX.length))
+  );
+  const format =
+    parsed?.format === "txt" || parsed?.format === "json" || parsed?.format === "auto"
+      ? parsed.format
+      : "auto";
+  const provider = typeof parsed?.provider === "string" && parsed.provider ? parsed.provider : "muyuan";
+  const content = typeof parsed?.content === "string" ? parsed.content : "";
+  return content ? { provider, format, content } : null;
+}
+
+function clearExtensionImportHash() {
+  if (!window.location.hash.startsWith(EXTENSION_IMPORT_HASH_PREFIX)) return;
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+}
 
 interface QuotaMonitorPageProps {
   currentUser?: string;
@@ -246,6 +282,50 @@ export default function QuotaMonitorPage({
     },
     [refetchQuotaData]
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    let payload: ExtensionImportPayload | null = null;
+
+    try {
+      payload = readExtensionImportPayload();
+    } catch (error) {
+      setNotice(error instanceof Error ? `浏览器导入助手数据解析失败：${error.message}` : "浏览器导入助手数据解析失败");
+      clearExtensionImportHash();
+      return;
+    }
+
+    if (!payload) return;
+    const extensionPayload = payload;
+
+    async function runExtensionImport() {
+      try {
+        setSelectedProvider(extensionPayload.provider);
+        setNotice("正在接收浏览器导入助手数据...");
+        const result = await importAccounts(extensionPayload);
+        if (cancelled) return;
+        await handleImportSuccess(result);
+        setNotice(`浏览器导入助手已导入 ${result.importedCount ?? 1} 个账号，当前共 ${result.count} 个账号`);
+      } catch (error) {
+        if (cancelled) return;
+        const message =
+          error instanceof ApiError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : "浏览器导入助手导入失败";
+        setNotice(message);
+      } finally {
+        clearExtensionImportHash();
+      }
+    }
+
+    void runExtensionImport();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [handleImportSuccess]);
 
   const handleRefresh = useCallback(async () => {
     if (manualRefreshing || refreshing || isForceRefreshPending) return;
