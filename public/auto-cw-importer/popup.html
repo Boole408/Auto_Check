@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Auto_CW 导入助手</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <header>
+        <p class="eyebrow">Auto_CW</p>
+        <h1>导入当前网页登录态</h1>
+      </header>
+
+      <label class="field">
+        <span>Auto_CW 地址</span>
+        <input id="appUrl" type="url" autocomplete="off" spellcheck="false" />
+      </label>
+
+      <section class="status" id="status">正在读取当前标签页...</section>
+
+      <button id="importButton" type="button" disabled>导入当前账号</button>
+
+      <p class="hint">
+        先在目标站点完成网页登录，再打开此扩展导入。若提示未登录 Auto_CW，请先打开控制台登录一次。
+      </p>
+    </main>
+    <script src="./popup.js"></script>
+  </body>
+</html>

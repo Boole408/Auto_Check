@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Auto_CW 导入助手",
+  "version": "1.0.0",
+  "description": "从已登录的目标站点读取 Cookie，并快速导入到 Auto_CW。",
+  "permissions": ["activeTab", "cookies", "storage"],
+  "host_permissions": [
+    "https://autocw.ccwu.cc/*",
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*",
+    "https://muyuan.do/*",
+    "http://new.xem8k5.top:3000/*",
+    "https://freeapi.dgbmc.top/*",
+    "https://jiuuij.de5.net/*",
+    "https://anyrouter.top/*"
+  ],
+  "action": {
+    "default_title": "导入到 Auto_CW",
+    "default_popup": "popup.html"
+  }
+}
