@@ -193,6 +193,7 @@ export interface ImportAccountsResult {
   importedCount?: number;
   previousCount?: number;
   mode?: "merge" | "replace";
+  importSource?: "content" | "curl";
   usernames: string[];
 }
 

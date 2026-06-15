@@ -11,6 +11,8 @@ const ACCOUNT_IMPORT_PLACEHOLDER = `支持账号密码:
 username,password
 账号：your_username，密码：your_password
 
+最快方式：跳转网页登录后，在浏览器 Network 里找 /api/user/self，请求右键 Copy as cURL，然后整段粘贴到这里。
+
 支持网页登录态:
 username,cookie=your_cookie
 username,token=your_new_api_token,cookie=your_cookie
@@ -145,7 +147,7 @@ export function AccountImportModal({
               <div>
                 <CardTitle>账号导入</CardTitle>
                 <CardDescription>
-                  支持直接粘贴账号密码、token、cookie，或导入 `txt/csv/json` 文件，保存后会合并到当前账号列表。
+                  支持直接粘贴账号密码、token、cookie、浏览器 Copy as cURL，或导入 `txt/csv/json` 文件，保存后会合并到当前账号列表。
                 </CardDescription>
               </div>
               <Button variant="ghost" size="icon" onClick={onClose}>
@@ -172,7 +174,7 @@ export function AccountImportModal({
                 选择 txt/csv/json
               </Button>
               <Badge variant="outline" className="max-w-full truncate">
-                {accountImportFileName || "未选择文件，可直接粘贴账号、token 或 cookie"}
+                {accountImportFileName || "未选择文件，可直接粘贴账号、token、cookie 或 cURL"}
               </Badge>
               {(accountImportDraft || accountImportFileName) ? (
                 <Button
@@ -191,6 +193,7 @@ export function AccountImportModal({
             <div className="flex flex-col gap-3 rounded-[1rem] border border-[#DDEAE5] bg-[rgba(236,251,246,0.62)] px-3.5 py-3 dark:border-[#294038] dark:bg-[rgba(20,31,27,0.72)] sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="outline">网页登录态</Badge>
+                <Badge variant="outline">Copy as cURL 可自动识别</Badge>
                 <Badge variant="warning">SK API Key 不能当登录态</Badge>
               </div>
               <Button size="sm" variant="outline" onClick={handleOpenProviderLogin}>
@@ -209,7 +212,7 @@ export function AccountImportModal({
 
             <div className="flex flex-col gap-3 text-xs text-muted-foreground">
               <span>当前保存路径：{accountFile || "./accounts.txt"}</span>
-              <span>支持格式：`username,password`、`username,token=xxx`、`username,cookie=xxx`、`userId=数字`、JSON 数组对象。</span>
+              <span>支持格式：`username,password`、`username,token=xxx`、`username,cookie=xxx`、浏览器 Copy as cURL、JSON 数组对象。</span>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3">

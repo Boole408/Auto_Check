@@ -31,6 +31,170 @@ function sendEmptyAccounts(res) {
   });
 }
 
+function unwrap(payload) {
+  if (!payload || typeof payload !== "object") return payload;
+  return payload.data && typeof payload.data === "object" ? payload.data : payload;
+}
+
+function readPath(object, paths) {
+  for (const pathSpec of paths) {
+    const parts = String(pathSpec).split(".");
+    let current = object;
+    for (const part of parts) {
+      if (current == null || typeof current !== "object" || !(part in current)) {
+        current = undefined;
+        break;
+      }
+      current = current[part];
+    }
+    if (current != null && current !== "") return current;
+  }
+  return "";
+}
+
+function parseCurlHeaderArgs(content) {
+  const headers = {};
+  const headerPattern = /(?:^|\s)(?:-H|--header)\s+(?:"([^"]*)"|'([^']*)'|([^\s]+))/gi;
+  let match;
+
+  while ((match = headerPattern.exec(content))) {
+    const rawHeader = String(match[1] || match[2] || match[3] || "").trim();
+    const separatorIndex = rawHeader.indexOf(":");
+    if (separatorIndex <= 0) continue;
+
+    const name = rawHeader.slice(0, separatorIndex).trim().toLowerCase();
+    const value = rawHeader.slice(separatorIndex + 1).trim();
+    if (name && value) headers[name] = value;
+  }
+
+  return headers;
+}
+
+function parseCurlCookieArg(content) {
+  const cookieArgPattern = /(?:^|\s)(?:-b|--cookie)\s+(?:"([^"]*)"|'([^']*)'|([^\r\n]+?)(?=\s+-|$))/i;
+  const match = String(content).match(cookieArgPattern);
+  return String(match?.[1] || match?.[2] || match?.[3] || "").trim();
+}
+
+function parseCookieFromCurl(content) {
+  const source = String(content || "");
+  if (!/^\s*curl\s+/i.test(source) && !/(?:^|\s)(?:-H|--header)\s+["']?cookie\s*:/i.test(source)) {
+    return "";
+  }
+
+  const headers = parseCurlHeaderArgs(source);
+  return headers.cookie || parseCurlCookieArg(source);
+}
+
+function sanitizeDisplayName(value, fallback = "") {
+  return String(value || fallback || "")
+    .replace(/：/g, ":")
+    .replace(/，/g, ",")
+    .replace(/；/g, ";")
+    .trim()
+    .replace(/^(?:账号|用户名|username|user)\s*[:=]\s*/i, "")
+    .replace(/\s*(?:密码|password|pass)\s*[:=].*$/i, "")
+    .split(/[;,]/)[0]
+    .trim()
+    .replace(/^["']|["']$/g, "");
+}
+
+async function fetchImportedCookieUser(providerId, cookie, signal) {
+  const provider = getProviderConfig(providerId);
+  const endpoints = ["/api/user/self", "/api/user/info", "/api/user"];
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(new URL(endpoint, provider.baseUrl), {
+        signal,
+        headers: {
+          Accept: "application/json",
+          Cookie: cookie,
+          "User-Agent": "AutoCheck/1.0"
+        }
+      });
+      if ([400, 401, 403, 404, 405].includes(response.status)) continue;
+      if (!response.ok) continue;
+
+      const payload = await response.json();
+      if (payload?.success === false) continue;
+      const data = unwrap(payload) || {};
+      if (data && typeof data === "object") return data;
+    } catch {
+      // Try the next compatible account endpoint.
+    }
+  }
+
+  return null;
+}
+
+function buildAccountFromImportedUser(user, cookie) {
+  const userId = String(
+    readPath(user, ["id", "user_id", "userId", "user.id", "user.user_id", "user.userId"]) || ""
+  ).trim();
+  const displayName = sanitizeDisplayName(
+    readPath(user, [
+      "display_name",
+      "displayName",
+      "nickname",
+      "name",
+      "username",
+      "email",
+      "user.display_name",
+      "user.displayName",
+      "user.nickname",
+      "user.name",
+      "user.username"
+    ]),
+    userId
+  );
+  const username = sanitizeDisplayName(
+    readPath(user, [
+      "username",
+      "email",
+      "name",
+      "display_name",
+      "displayName",
+      "nickname",
+      "user.username",
+      "user.email",
+      "user.name"
+    ]),
+    displayName || userId
+  );
+
+  if (!username) return null;
+
+  return {
+    username,
+    cookie,
+    authType: "cookie",
+    loginProvider: "web",
+    ...(userId ? { userId } : {}),
+    ...(displayName ? { displayName } : {})
+  };
+}
+
+async function parseCurlAccountContent(providerId, content) {
+  const cookie = parseCookieFromCurl(content);
+  if (!cookie) return null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8_000);
+
+  try {
+    const user = await fetchImportedCookieUser(providerId, cookie, controller.signal);
+    const account = user ? buildAccountFromImportedUser(user, cookie) : null;
+    return {
+      cookie,
+      account,
+      userLoaded: Boolean(user)
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 router.use(requireAuth);
 
 function getRequestProviderId(req) {
@@ -169,12 +333,25 @@ router.post("/accounts/import", async (req, res, next) => {
     const providerId = getRequestProviderId(req);
     const content = typeof req.body?.content === "string" ? req.body.content : "";
     const format = req.body?.format === "json" || req.body?.format === "txt" ? req.body.format : "auto";
-    const incomingAccounts = parseAccountsContent(content, format);
+    const curlImport = await parseCurlAccountContent(providerId, content);
+    const incomingAccounts = curlImport?.account
+      ? [curlImport.account]
+      : parseAccountsContent(content, format);
 
     if (!incomingAccounts.length) {
+      if (curlImport?.cookie) {
+        res.status(422).json({
+          success: false,
+          message:
+            "已读取到 cURL 里的 cookie，但无法读取账号信息。请确认复制的是登录后的 MUYUAN 请求，建议复制 Network 里的 /api/user/self 请求。",
+          data: null
+        });
+        return;
+      }
+
       res.status(400).json({
         success: false,
-        message: "未解析到有效账号，请检查 txt/json 内容格式",
+        message: "未解析到有效账号，请检查 txt/json/cURL 内容格式",
         data: null
       });
       return;
@@ -196,6 +373,7 @@ router.post("/accounts/import", async (req, res, next) => {
         importedCount: incomingAccounts.length,
         previousCount: existingAccounts.length,
         mode: "merge",
+        importSource: curlImport?.account ? "curl" : "content",
         usernames: result.accounts.map((account) => account.username)
       },
       `已合并导入 ${incomingAccounts.length} 个账号，当前共 ${result.count} 个账号`
