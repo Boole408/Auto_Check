@@ -72,6 +72,12 @@ export interface AccountDataSource {
 export interface AccountQuota {
   username: string;
   displayName: string;
+  userId?: string;
+  authType?: "password" | "token" | "cookie" | "api_key" | "linuxdo" | "oauth" | "unknown";
+  loginProvider?: string;
+  credentialKind?: "password" | "token" | "cookie" | "api_key" | "none";
+  sessionExpiresAt?: string | null;
+  sessionStatus?: "valid" | "expiring" | "expired" | "unknown";
   apiKey?: string;
   apiKeyUpdatedAt?: string | null;
   signedToday: boolean;
@@ -97,7 +103,7 @@ export interface CoverageStat {
   totalAccounts: number;
 }
 
-export type DashboardAlertType = "rate_limit" | "auth_failed" | "sync_timeout";
+export type DashboardAlertType = "rate_limit" | "auth_failed" | "sync_timeout" | "session_expiring";
 export type DashboardAlertSeverity = "warning" | "destructive";
 
 export interface DashboardAlert {

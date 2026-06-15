@@ -1,6 +1,17 @@
 import { memo, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Activity, Check, CheckCircle2, Clock3, Copy, KeyRound, LoaderCircle, RefreshCw } from "lucide-react";
+import {
+  Activity,
+  Check,
+  CheckCircle2,
+  Clock3,
+  Copy,
+  Fingerprint,
+  KeyRound,
+  LoaderCircle,
+  RefreshCw,
+  ShieldCheck
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,6 +47,30 @@ interface AccountDetailPanelProps {
   checkinQueue: CheckinQueueState | undefined;
   usageQueue: UsageSyncState | undefined;
   onSelect: (username: string) => void;
+}
+
+function getAuthTypeText(account: QuotaDashboard["accounts"][number]) {
+  if (account.loginProvider === "linuxdo" || account.authType === "linuxdo") return "LinuxDo OAuth";
+  if (account.credentialKind === "cookie") return "网页登录态 Cookie";
+  if (account.credentialKind === "token") return "网页登录态 Token";
+  if (account.credentialKind === "api_key") return "模型 API Key";
+  if (account.credentialKind === "password") return "账号密码";
+  return "未识别";
+}
+
+function getCredentialKindText(account: QuotaDashboard["accounts"][number]) {
+  if (account.credentialKind === "cookie") return "Cookie";
+  if (account.credentialKind === "token") return "Token";
+  if (account.credentialKind === "api_key") return "API Key";
+  if (account.credentialKind === "password") return "Password";
+  return "None";
+}
+
+function getSessionStatusText(account: QuotaDashboard["accounts"][number]) {
+  if (account.sessionStatus === "valid") return "有效";
+  if (account.sessionStatus === "expiring") return "即将到期";
+  if (account.sessionStatus === "expired") return "已过期";
+  return "未标注";
 }
 
 export const AccountDetailPanel = memo(function AccountDetailPanel({
@@ -100,6 +135,22 @@ export const AccountDetailPanel = memo(function AccountDetailPanel({
           valueClassName: selectedApiKey
             ? "break-all font-mono text-[0.72rem] leading-relaxed"
             : ""
+        },
+        {
+          label: "登录方式",
+          value: getAuthTypeText(selectedAccount),
+          hint: selectedAccount.userId
+            ? `userId ${selectedAccount.userId} | ${getCredentialKindText(selectedAccount)}`
+            : `凭据 ${getCredentialKindText(selectedAccount)}`,
+          icon: Fingerprint
+        },
+        {
+          label: "登录态",
+          value: getSessionStatusText(selectedAccount),
+          hint: selectedAccount.sessionExpiresAt
+            ? `到期 ${formatTime(selectedAccount.sessionExpiresAt)}`
+            : "站点未返回明确到期时间",
+          icon: ShieldCheck
         },
         {
           label: "用量同步",

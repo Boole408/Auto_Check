@@ -158,6 +158,10 @@ export default function QuotaMonitorPage({
     { id: "jiuuij", label: "JIUUIJ", displayName: "JIUUIJ", baseUrl: "" },
     { id: "anyrouter", label: "ANYROUTER", displayName: "Any Router", baseUrl: "" }
   ];
+  const selectedProviderConfig = useMemo(
+    () => providers.find((provider) => provider.id === selectedProvider) ?? null,
+    [providers, selectedProvider]
+  );
   const {
     data: dashboard,
     error: quotaError,
@@ -495,6 +499,7 @@ export default function QuotaMonitorPage({
       <AccountImportModal
         isOpen={importModalOpen}
         provider={selectedProvider}
+        providerBaseUrl={selectedProviderConfig?.baseUrl}
         accountFile={dashboard?.accountFile}
         onClose={() => setImportModalOpen(false)}
         onSuccess={handleImportSuccess}

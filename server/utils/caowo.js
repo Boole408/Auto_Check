@@ -13,6 +13,7 @@ const DEFAULT_CUSTOM_CURRENCY_EXCHANGE_RATE = 1;
 const DEFAULT_CURRENCY_SYMBOL = "¥";
 const DEFAULT_DASHBOARD_CACHE_TTL = 10_000;
 const DEFAULT_SESSION_TTL = 6 * 60 * 60 * 1000;
+const DEFAULT_IMPORTED_COOKIE_SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_RATE_LIMIT_COOLDOWN = 180_000;
 const DEFAULT_USAGE_SYNC_DELAY = 4_000;
 const DEFAULT_TIMEOUT = 15_000;
@@ -706,7 +707,9 @@ function accountCredentialFingerprint(account) {
     account.token || "",
     account.cookie || "",
     account.userId || "",
-    account.expiresAt || ""
+    account.expiresAt || "",
+    account.authType || "",
+    account.loginProvider || ""
   ].join(":");
   return passwordHash(material || account.username);
 }
@@ -1107,7 +1110,6 @@ function pickActiveTokenItem(items = []) {
 
 function apiKeySyncRequestOptions(session) {
   return {
-    headers: sessionHeaders(session),
     timeout: Math.min(Number(provider.timeoutMs || DEFAULT_TIMEOUT), 5_000)
   };
 }
@@ -1116,7 +1118,8 @@ async function fetchFullTokenKey(session, tokenId) {
   if (tokenId === undefined || tokenId === null || tokenId === "") return "";
 
   try {
-    const response = await client.post(
+    const response = await authedPost(
+      session,
       `/api/token/${encodeURIComponent(String(tokenId))}/key`,
       null,
       apiKeySyncRequestOptions(session)
@@ -1145,7 +1148,7 @@ async function fetchAccountApiKey(session) {
 
   for (const endpoint of endpoints) {
     try {
-      const response = await client.get(endpoint, apiKeySyncRequestOptions(session));
+      const response = await authedGet(session, endpoint, apiKeySyncRequestOptions(session));
       if ([400, 401, 403, 404, 405, 429].includes(response.status)) continue;
       if (response.status < 200 || response.status >= 300) continue;
       if (!isSuccessEnvelope(response.data)) continue;
@@ -1209,9 +1212,126 @@ function assertHttpOk(response, context) {
 }
 
 function extractCookie(headers) {
-  const setCookie = headers?.["set-cookie"];
-  if (!setCookie) return "";
+  const setCookie = getSetCookieHeaders(headers);
+  if (!setCookie.length) return "";
   return setCookie.map((item) => item.split(";")[0]).join("; ");
+}
+
+function getSetCookieHeaders(headers) {
+  const setCookie = headers?.["set-cookie"];
+  if (!setCookie) return [];
+  return Array.isArray(setCookie) ? setCookie : [setCookie];
+}
+
+function splitCookiePairs(cookieHeader = "") {
+  const pairs = new Map();
+  String(cookieHeader || "")
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .forEach((item) => {
+      const separatorIndex = item.indexOf("=");
+      if (separatorIndex <= 0) return;
+      const name = item.slice(0, separatorIndex).trim();
+      const value = item.slice(separatorIndex + 1).trim();
+      if (name) pairs.set(name, value);
+    });
+  return pairs;
+}
+
+function parseSetCookieMaxAge(setCookie = "") {
+  const match = String(setCookie).match(/;\s*max-age=(-?\d+)/i);
+  if (!match) return null;
+  const seconds = Number(match[1]);
+  return Number.isFinite(seconds) ? seconds : null;
+}
+
+function parseSetCookieExpiresAt(setCookie = "") {
+  const maxAge = parseSetCookieMaxAge(setCookie);
+  if (maxAge != null) return Date.now() + maxAge * 1000;
+
+  const expiresMatch = String(setCookie).match(/;\s*expires=([^;]+)/i);
+  if (!expiresMatch) return null;
+  const parsed = Date.parse(expiresMatch[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function mergeResponseCookies(existingCookie = "", headers = {}) {
+  const setCookieHeaders = getSetCookieHeaders(headers);
+  if (!setCookieHeaders.length) {
+    return {
+      cookie: existingCookie || "",
+      expiresAt: null,
+      changed: false
+    };
+  }
+
+  const pairs = splitCookiePairs(existingCookie);
+  let changed = false;
+  let latestExpiresAt = null;
+  let expiredAuthCookie = false;
+
+  for (const setCookie of setCookieHeaders) {
+    const [cookiePair] = String(setCookie).split(";");
+    const separatorIndex = cookiePair.indexOf("=");
+    if (separatorIndex <= 0) continue;
+
+    const name = cookiePair.slice(0, separatorIndex).trim();
+    const value = cookiePair.slice(separatorIndex + 1).trim();
+    if (!name) continue;
+
+    const expiresAt = parseSetCookieExpiresAt(setCookie);
+    if (expiresAt != null) {
+      latestExpiresAt = Math.max(latestExpiresAt || 0, expiresAt);
+    }
+
+    if (expiresAt != null && expiresAt <= Date.now()) {
+      if (/^(session|token)$/i.test(name)) {
+        expiredAuthCookie = true;
+      }
+      if (pairs.delete(name)) changed = true;
+      continue;
+    }
+
+    if (pairs.get(name) !== value) {
+      pairs.set(name, value);
+      changed = true;
+    }
+  }
+
+  return {
+    cookie: Array.from(pairs.entries())
+      .map(([name, value]) => `${name}=${value}`)
+      .join("; "),
+    expiresAt: latestExpiresAt,
+    expiredAuthCookie,
+    changed
+  };
+}
+
+function persistSessionFromResponse(session, response) {
+  if (!session?.accountKey || !response?.headers) return;
+
+  const merged = mergeResponseCookies(session.cookie, response.headers);
+  if (!merged.changed && !merged.expiresAt) return;
+
+  const nextSession = {
+    ...session,
+    cookie: merged.cookie || session.cookie || "",
+    expiresAt: merged.expiredAuthCookie
+      ? Date.now() - 1000
+      : Math.max(
+          Number(session.expiresAt) || 0,
+          Number(merged.expiresAt) || 0,
+          Date.now() + DEFAULT_SESSION_TTL
+        )
+  };
+
+  Object.assign(session, nextSession);
+  sessionCache.set(session.accountKey, nextSession);
+  const sessionStore = readSessionStore();
+  sessionStore[session.accountKey] = nextSession;
+  writeSessionStore(sessionStore);
 }
 
 function sessionHeaders(session) {
@@ -1230,6 +1350,29 @@ function sessionHeaders(session) {
   }
 
   return headers;
+}
+
+function withSessionRequestOptions(session, options = {}) {
+  const { headers = {}, ...rest } = options || {};
+  return {
+    ...rest,
+    headers: {
+      ...sessionHeaders(session),
+      ...headers
+    }
+  };
+}
+
+async function authedGet(session, url, options = {}) {
+  const response = await client.get(url, withSessionRequestOptions(session, options));
+  persistSessionFromResponse(session, response);
+  return response;
+}
+
+async function authedPost(session, url, data = null, options = {}) {
+  const response = await client.post(url, data, withSessionRequestOptions(session, options));
+  persistSessionFromResponse(session, response);
+  return response;
 }
 
 function enterRateLimitCooldown(error) {
@@ -1435,8 +1578,9 @@ function updateAccountState(account, updater) {
   return next;
 }
 
-function buildAccountView(state) {
+function buildAccountView(state, account = {}, sessionStore = null) {
   const todayUsedValue = state.usage.value;
+  const sessionExpiresAt = getAccountSessionExpiresAt(account, sessionStore);
   const totalQuota =
     state.totalQuota > 0
       ? state.totalQuota
@@ -1454,6 +1598,12 @@ function buildAccountView(state) {
   return {
     username: state.username,
     displayName: sanitizeDisplayName(state.displayName, state.username),
+    userId: resolveAccountUserId(account, ""),
+    authType: normalizeAccountAuthType(account),
+    loginProvider: normalizeLoginProvider(account),
+    credentialKind: getAccountCredentialKind(account),
+    sessionExpiresAt: formatExpiresAtIso(sessionExpiresAt),
+    sessionStatus: getSessionStatus(sessionExpiresAt),
     apiKey: state.apiKey || "",
     apiKeyUpdatedAt: state.apiKeyUpdatedAt || null,
     signedToday: state.checkin.signedToday,
@@ -1484,7 +1634,8 @@ function buildAccountView(state) {
 }
 
 function getAllAccountViews() {
-  return getAccounts().map((account) => buildAccountView(getAccountState(account)));
+  const sessionStore = readSessionStore();
+  return getAccounts().map((account) => buildAccountView(getAccountState(account), account, sessionStore));
 }
 
 function normalizeRates(payload = {}) {
@@ -1570,6 +1721,60 @@ function hasImportedSessionCredentials(account) {
   return Boolean(account?.token || account?.cookie);
 }
 
+function isModelApiKeyToken(value = "") {
+  return /^sk-[a-z0-9]/i.test(String(value || "").trim());
+}
+
+function normalizeAccountAuthType(account = {}) {
+  const raw = String(
+    account.authType ||
+      account.loginType ||
+      account.loginProvider ||
+      account.oauthProvider ||
+      ""
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+
+  if (raw.includes("linuxdo")) return "linuxdo";
+  if (raw.includes("oauth")) return "oauth";
+  if (account.cookie) return "cookie";
+  if (account.token) return isModelApiKeyToken(account.token) ? "api_key" : "token";
+  if (account.password) return "password";
+  return "unknown";
+}
+
+function normalizeLoginProvider(account = {}) {
+  const raw = String(
+    account.loginProvider ||
+      account.oauthProvider ||
+      account.authProvider ||
+      account.authType ||
+      ""
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+
+  if (raw.includes("linuxdo")) return "linuxdo";
+  return "";
+}
+
+function isLinuxDoOAuthAccount(account = {}) {
+  return (
+    normalizeAccountAuthType(account) === "linuxdo" ||
+    normalizeLoginProvider(account) === "linuxdo"
+  );
+}
+
+function getAccountCredentialKind(account = {}) {
+  if (account.cookie) return "cookie";
+  if (account.token) return isModelApiKeyToken(account.token) ? "api_key" : "token";
+  if (account.password) return "password";
+  return "none";
+}
+
 function deriveTrailingNumericUserId(account) {
   if (!provider.deriveTrailingNumericUserId) return "";
   const candidates = [account?.userId, account?.username, account?.displayName].filter(Boolean);
@@ -1600,7 +1805,9 @@ function assertProviderUserId(account, userId) {
 }
 
 function getImportedSessionExpiresAt(account) {
-  if (!account?.expiresAt) return Date.now() + DEFAULT_SESSION_TTL;
+  if (!account?.expiresAt) {
+    return Date.now() + (account?.cookie ? DEFAULT_IMPORTED_COOKIE_SESSION_TTL : DEFAULT_SESSION_TTL);
+  }
 
   const numericExpiresAt = Number(account.expiresAt);
   if (Number.isFinite(numericExpiresAt)) {
@@ -1611,10 +1818,54 @@ function getImportedSessionExpiresAt(account) {
   return Number.isFinite(parsedExpiresAt) ? parsedExpiresAt : Date.now() + DEFAULT_SESSION_TTL;
 }
 
+function getExplicitAccountExpiresAt(account) {
+  if (!account?.expiresAt) return null;
+
+  const numericExpiresAt = Number(account.expiresAt);
+  if (Number.isFinite(numericExpiresAt)) {
+    return numericExpiresAt > 10_000_000_000 ? numericExpiresAt : numericExpiresAt * 1000;
+  }
+
+  const parsedExpiresAt = Date.parse(account.expiresAt);
+  return Number.isFinite(parsedExpiresAt) ? parsedExpiresAt : null;
+}
+
+function getStoredSession(account, sessionStore = null) {
+  const key = account?.key || accountCacheKey(account);
+  return sessionCache.get(key) || sessionStore?.[key] || null;
+}
+
+function getAccountSessionExpiresAt(account, sessionStore = null) {
+  const storedSession = getStoredSession(account, sessionStore);
+  const storedExpiresAt = Number(storedSession?.expiresAt);
+  if (Number.isFinite(storedExpiresAt) && storedExpiresAt > 0) return storedExpiresAt;
+  return getExplicitAccountExpiresAt(account);
+}
+
+function getSessionStatus(expiresAt) {
+  if (!expiresAt) return "unknown";
+  if (expiresAt <= Date.now()) return "expired";
+  if (expiresAt - Date.now() <= 3 * 24 * 60 * 60 * 1000) return "expiring";
+  return "valid";
+}
+
+function formatExpiresAtIso(expiresAt) {
+  return expiresAt ? new Date(expiresAt).toISOString() : null;
+}
+
 function createImportedSession(account) {
+  const tokenLooksLikeApiKey = isModelApiKeyToken(account.token);
+  if (tokenLooksLikeApiKey && !account.cookie) {
+    throw new CaowoError(
+      "sk- 开头的是模型 API Key，不是 MUYUAN 网页登录态；LinuxDo 登录账号请导入浏览器里的 session/cookie 和数字 userId。",
+      401,
+      "AUTH_FAILED"
+    );
+  }
+
   const expiresAt = getImportedSessionExpiresAt(account);
   if (expiresAt <= Date.now()) {
-    throw new CaowoError("导入的登录态已过期，请重新从浏览器复制 token/cookie", 401, "AUTH_FAILED");
+    throw new CaowoError("导入的登录态已过期，请重新从浏览器复制 session/cookie", 401, "AUTH_FAILED");
   }
 
   const displayName =
@@ -1626,8 +1877,10 @@ function createImportedSession(account) {
     username: account.username,
     displayName: String(displayName),
     userId,
-    token: account.token || "",
+    token: tokenLooksLikeApiKey ? "" : account.token || "",
     cookie: account.cookie || "",
+    authType: normalizeAccountAuthType(account),
+    loginProvider: normalizeLoginProvider(account),
     loginUser: sanitizeUserForSession({
       id: userId,
       username: account.username,
@@ -1658,8 +1911,14 @@ async function loginAccount(account, { force = false } = {}) {
     persisted.expiresAt > Date.now() &&
     isValidProviderUserId(persisted.userId)
   ) {
-    sessionCache.set(key, persisted);
-    return persisted;
+    const hydratedSession = {
+      ...persisted,
+      accountKey: key,
+      authType: persisted.authType || normalizeAccountAuthType(account),
+      loginProvider: persisted.loginProvider || normalizeLoginProvider(account)
+    };
+    sessionCache.set(key, hydratedSession);
+    return hydratedSession;
   }
 
   if (isCoolingDown()) {
@@ -1667,8 +1926,14 @@ async function loginAccount(account, { force = false } = {}) {
   }
 
   if (hasImportedSessionCredentials(account)) {
-    const importedSession = createImportedSession(account);
+    const importedSession = {
+      ...createImportedSession(account),
+      accountKey: key
+    };
     sessionCache.set(key, importedSession);
+    const sessionStore = readSessionStore();
+    sessionStore[key] = importedSession;
+    writeSessionStore(sessionStore);
     clearAuthFailedAlert(account.username);
     return importedSession;
   }
@@ -1676,6 +1941,15 @@ async function loginAccount(account, { force = false } = {}) {
   if (!account.password) {
     registerAuthFailedAlert(account.username);
     throw new CaowoError("账号缺少密码或导入登录态，无法登录站点", 401, "AUTH_FAILED");
+  }
+
+  if (isLinuxDoOAuthAccount(account)) {
+    registerAuthFailedAlert(account.username);
+    throw new CaowoError(
+      "LinuxDo OAuth 账号不能用 LinuxDo 密码直连 MUYUAN；请在浏览器完成 LinuxDo 登录后导入 MUYUAN session/cookie。",
+      401,
+      "AUTH_FAILED"
+    );
   }
 
   const response = assertHttpOk(
@@ -1718,6 +1992,9 @@ async function loginAccount(account, { force = false } = {}) {
     userId,
     token: token ? String(token) : "",
     cookie: extractCookie(response.headers),
+    accountKey: key,
+    authType: normalizeAccountAuthType(account),
+    loginProvider: normalizeLoginProvider(account),
     loginUser: sanitizeUserForSession(user),
     expiresAt: Date.now() + DEFAULT_SESSION_TTL
   };
@@ -1764,7 +2041,7 @@ async function withAccountSession(account, worker) {
 async function fetchSelf(session) {
   const endpoints = ["/api/user/self", "/api/user/info", "/api/user"];
   for (const endpoint of endpoints) {
-    const response = await client.get(endpoint, { headers: sessionHeaders(session) });
+    const response = await authedGet(session, endpoint);
     if (response.status === 404 || response.status === 405) continue;
     assertHttpOk(response, "读取账号信息");
     if (!isSuccessEnvelope(response.data)) {
@@ -1821,9 +2098,7 @@ async function fetchTrendCheckinStats(session) {
 
   for (const monthKey of monthKeys) {
     const endpoint = statsTemplate.replace("{month}", encodeURIComponent(monthKey));
-    const response = await client.get(endpoint, {
-      headers: sessionHeaders(session)
-    });
+    const response = await authedGet(session, endpoint);
 
     debugLog("checkin-status", {
       username: session.username,
@@ -1950,9 +2225,7 @@ async function fetchTodayUsageFromLogs(session, start, end) {
       group: "",
       request_id: ""
     });
-    const response = await client.get(`/api/log/self/?${params.toString()}`, {
-      headers: sessionHeaders(session)
-    });
+    const response = await authedGet(session, `/api/log/self/?${params.toString()}`);
 
     if (response.status === 401 || response.status === 403) {
       throw new CaowoError("登录已失效，请重新同步", response.status, "AUTH_FAILED");
@@ -1994,7 +2267,7 @@ async function fetchTodayUsageStats(session) {
   ];
 
   for (const endpoint of endpoints) {
-    const response = await client.get(endpoint, { headers: sessionHeaders(session) });
+    const response = await authedGet(session, endpoint);
     if ([400, 401, 403, 404, 405].includes(response.status)) {
       if (response.status === 401 || response.status === 403) {
         throw new CaowoError("登录已失效，请重新同步", response.status, "AUTH_FAILED");
@@ -2591,9 +2864,8 @@ async function visitProviderWebPages(session) {
 
   for (const path of paths) {
     try {
-      await client.get(path, {
+      await authedGet(session, path, {
         headers: {
-          ...sessionHeaders(session),
           Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
       });
@@ -2647,9 +2919,7 @@ async function fastCheckinAccount(account) {
       });
     }
 
-    const response = await client.post(getCheckinEndpoint(), null, {
-      headers: sessionHeaders(session)
-    });
+    const response = await authedPost(session, getCheckinEndpoint(), null);
 
     assertHttpOk(response, "签到");
     const responseMessage = messageFrom(response.data, "签到完成");
@@ -3175,6 +3445,7 @@ function buildDashboardAlerts() {
   const rateLimitStreak = dashboardAlertsState.rateLimit.streak;
   const authFailedUsernames = Array.from(dashboardAlertsState.authFailed.usernames).sort();
   const syncTimeoutUsernames = Array.from(dashboardAlertsState.syncTimeout.usernames).sort();
+  const sessionExpiringUsernames = getSessionExpiringUsernames();
 
   if (rateLimitStreak >= 2) {
     alerts.push({
@@ -3189,14 +3460,33 @@ function buildDashboardAlerts() {
   }
 
   if (authFailedUsernames.length) {
+    const accounts = getAccounts();
+    const linuxDoFailedCount = authFailedUsernames.filter((username) => {
+      const account = accounts.find((item) => item.username === username);
+      return account && isLinuxDoOAuthAccount(account);
+    }).length;
     alerts.push({
       type: "auth_failed",
       severity: "destructive",
       title: "登录失效告警",
-      message: `${authFailedUsernames.length} 个账号登录态失效，请检查账号密码或重新同步。`,
+      message: linuxDoFailedCount
+        ? `${authFailedUsernames.length} 个账号登录态失效；LinuxDo 账号需要重新完成浏览器 OAuth 并导入 MUYUAN session/cookie。`
+        : `${authFailedUsernames.length} 个账号登录态失效，请检查账号密码或重新同步。`,
       count: authFailedUsernames.length,
       usernames: authFailedUsernames,
       updatedAt: dashboardAlertsState.authFailed.updatedAt
+    });
+  }
+
+  if (sessionExpiringUsernames.length) {
+    alerts.push({
+      type: "session_expiring",
+      severity: "warning",
+      title: "登录态即将到期",
+      message: `${sessionExpiringUsernames.length} 个账号的登录态将在 3 天内到期，建议提前刷新 cookie。`,
+      count: sessionExpiringUsernames.length,
+      usernames: sessionExpiringUsernames,
+      updatedAt: nowIso()
     });
   }
 
@@ -3213,6 +3503,15 @@ function buildDashboardAlerts() {
   }
 
   return alerts;
+}
+
+function getSessionExpiringUsernames() {
+  const sessionStore = readSessionStore();
+  return getAccounts()
+    .filter((account) => hasImportedSessionCredentials(account))
+    .filter((account) => getSessionStatus(getAccountSessionExpiresAt(account, sessionStore)) === "expiring")
+    .map((account) => account.username)
+    .sort();
 }
 
 function collectDashboardErrors(accounts) {

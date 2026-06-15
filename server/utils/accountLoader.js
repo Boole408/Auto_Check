@@ -36,7 +36,19 @@ const FIELD_ALIASES = {
   nickname: "displayName",
   expiresat: "expiresAt",
   expires_at: "expiresAt",
-  expire_at: "expiresAt"
+  expireat: "expiresAt",
+  expire_at: "expiresAt",
+  authtype: "authType",
+  auth_type: "authType",
+  logintype: "authType",
+  login_type: "authType",
+  oauthprovider: "loginProvider",
+  oauth_provider: "loginProvider",
+  loginprovider: "loginProvider",
+  login_provider: "loginProvider",
+  "登录方式": "authType",
+  "认证方式": "authType",
+  "登录来源": "loginProvider"
 };
 
 function getDefaultAccountFile() {
@@ -176,7 +188,7 @@ function collectKeyValueFields(line) {
   const normalized = normalizeDelimitedLine(line).replace(/\s+/g, " ");
   const fields = [];
   const fieldPattern =
-    /(?:^|,\s*)(账号|用户名|账户|密码|令牌|登录态|username|user|account|name|email|password|pass|pwd|token|access_token|accessToken|api_token|apiToken|bearer|jwt|cookie|cookies|session_cookie|sessionCookie|userId|user_id|id|uid|displayName|display_name|nickname|expiresAt|expires_at)\s*[:=]\s*/gi;
+    /(?:^|,\s*)(账号|用户名|账户|密码|令牌|登录态|登录方式|认证方式|登录来源|username|user|account|name|email|password|pass|pwd|token|access_token|accessToken|api_token|apiToken|bearer|jwt|cookie|cookies|session_cookie|sessionCookie|userId|user_id|id|uid|displayName|display_name|nickname|expiresAt|expires_at|expireAt|authType|auth_type|loginType|login_type|oauthProvider|oauth_provider|loginProvider|login_provider)\s*[:=]\s*/gi;
   let match;
 
   while ((match = fieldPattern.exec(normalized))) {
@@ -298,6 +310,25 @@ function normalizeAccountRecord(record) {
       ])
     );
     const expiresAt = cleanValue(readObjectPath(record, ["expiresAt", "expires_at", "expire_at"]));
+    const authType = cleanValue(
+      readObjectPath(record, [
+        "authType",
+        "auth_type",
+        "loginType",
+        "login_type",
+        "登录方式",
+        "认证方式"
+      ])
+    );
+    const loginProvider = cleanValue(
+      readObjectPath(record, [
+        "loginProvider",
+        "login_provider",
+        "oauthProvider",
+        "oauth_provider",
+        "登录来源"
+      ])
+    );
 
     if (!username || (!password && !token && !cookie)) return null;
 
@@ -308,7 +339,9 @@ function normalizeAccountRecord(record) {
       ...(cookie ? { cookie } : {}),
       ...(userId ? { userId } : {}),
       ...(displayName ? { displayName } : {}),
-      ...(expiresAt ? { expiresAt } : {})
+      ...(expiresAt ? { expiresAt } : {}),
+      ...(authType ? { authType } : {}),
+      ...(loginProvider ? { loginProvider } : {})
     };
   }
 
@@ -414,7 +447,9 @@ function serializeAccount(account) {
     ...(account.cookie ? { cookie: account.cookie } : {}),
     ...(account.userId ? { userId: account.userId } : {}),
     ...(account.displayName ? { displayName: account.displayName } : {}),
-    ...(account.expiresAt ? { expiresAt: account.expiresAt } : {})
+    ...(account.expiresAt ? { expiresAt: account.expiresAt } : {}),
+    ...(account.authType ? { authType: account.authType } : {}),
+    ...(account.loginProvider ? { loginProvider: account.loginProvider } : {})
   };
 }
 
