@@ -79,6 +79,19 @@ function countCookiePairs(cookieHeader = "") {
     .filter(Boolean).length;
 }
 
+function fingerprintText(value = "") {
+  let hash = 2166136261;
+  for (const char of String(value || "")) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function fallbackCookieUsername(provider, cookieHeader) {
+  return `${provider.id}-cookie-${fingerprintText(cookieHeader).slice(0, 8)}`;
+}
+
 function mergeCookieHeaders(...headers) {
   const pairs = new Map();
   for (const header of headers) {
@@ -482,43 +495,54 @@ async function importCurrentAccount() {
       const validatedUser = activeContext.user;
 
       const userId = validatedUser ? String(
-        validatedUser.id || validatedUser.userId || validatedUser.user_id ||
-        validatedUser.data?.id || validatedUser.data?.userId || ""
+        readPath(validatedUser, ["id", "userId", "user_id", "data.id", "data.userId", "data.user_id"]) || ""
       ).trim() : "";
-      const username = validatedUser ? String(
-        validatedUser.username || validatedUser.email || validatedUser.name ||
-        validatedUser.displayName || validatedUser.display_name ||
-        validatedUser.data?.username || validatedUser.data?.email || ""
-      ).trim() : "";
+      const username =
+        cleanName(
+          validatedUser
+            ? readPath(validatedUser, [
+                "username",
+                "email",
+                "name",
+                "displayName",
+                "display_name",
+                "nickname",
+                "data.username",
+                "data.email",
+                "data.name",
+                "data.displayName",
+                "data.display_name",
+                "data.nickname"
+              ])
+            : "",
+          fallbackCookieUsername(activeContext.provider, activeContext.cookieHeader)
+        ) || fallbackCookieUsername(activeContext.provider, activeContext.cookieHeader);
       const displayName = validatedUser ? String(
-        validatedUser.displayName || validatedUser.display_name || validatedUser.nickname ||
-        validatedUser.name || validatedUser.username ||
-        validatedUser.data?.displayName || validatedUser.data?.display_name || ""
+        readPath(validatedUser, [
+          "displayName",
+          "display_name",
+          "nickname",
+          "name",
+          "username",
+          "data.displayName",
+          "data.display_name",
+          "data.nickname",
+          "data.name",
+          "data.username"
+        ]) || ""
       ).trim() : "";
 
-      if (username) {
-        importPayload = {
-          provider: activeContext.provider.id,
-          account: {
-            username,
-            cookie: activeContext.cookieHeader,
-            ...(userId ? { userId } : {}),
-            ...(displayName ? { displayName } : {}),
-            authType: "cookie",
-            loginProvider: "web"
-          }
-        };
-      } else {
-        importPayload = {
-          provider: activeContext.provider.id,
-          format: "auto",
-          content: buildCurlContent(
-            activeContext.origin,
-            activeContext.provider.userEndpoints[0],
-            activeContext.cookieHeader
-          )
-        };
-      }
+      importPayload = {
+        provider: activeContext.provider.id,
+        account: {
+          username,
+          cookie: activeContext.cookieHeader,
+          ...(userId ? { userId } : {}),
+          ...(displayName ? { displayName } : {}),
+          authType: "cookie",
+          loginProvider: "web"
+        }
+      };
     } else if (activeContext.account) {
       importPayload = {
         provider: activeContext.provider.id,
