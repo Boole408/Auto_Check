@@ -541,7 +541,8 @@ async function importCurrentAccount() {
           ...(displayName ? { displayName } : {}),
           authType: "cookie",
           loginProvider: "web"
-        }
+        },
+        ...(validatedUser ? { snapshot: { user: validatedUser } } : {})
       };
     } else if (activeContext.account) {
       importPayload = {

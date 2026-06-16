@@ -2365,6 +2365,32 @@ function applyUsageStats(state, usageStats, source = "log-stat") {
   return state;
 }
 
+function applyBrowserSnapshot(account, snapshot = {}) {
+  if (!snapshot || typeof snapshot !== "object") return null;
+
+  const state = updateAccountState(account, (nextState) => {
+    if (snapshot.user && typeof snapshot.user === "object") {
+      mergeBaseInfoFromUser(nextState, snapshot.user);
+    }
+
+    if (snapshot.usage && typeof snapshot.usage === "object") {
+      applyUsageStats(nextState, snapshot.usage, "browser");
+    }
+
+    if (snapshot.checkin && typeof snapshot.checkin === "object") {
+      applyCheckinStats(nextState, snapshot.checkin, "browser");
+    }
+
+    nextState.updatedAt = nowIso();
+    nextState.lastRemoteSyncAt = nowIso();
+    return nextState;
+  });
+
+  clearAuthFailedAlert(account.username);
+  clearSyncTimeoutAlert(account.username);
+  return state;
+}
+
 function markUsageStale(account) {
   updateAccountState(account, (state) => {
     state.usage.dayKey = currentDayKey();
@@ -3745,7 +3771,8 @@ return {
   stopAutoCheckinScheduler,
   getDashboard,
   checkinAccount,
-  startOrResumeCheckinQueue
+  startOrResumeCheckinQueue,
+  applyBrowserSnapshot
 };
 }
 
@@ -3809,4 +3836,8 @@ export async function checkinAccount(account, options = {}) {
 
 export async function startOrResumeCheckinQueue(scope = "all", options = {}) {
   return getRuntime(readProviderId(options)).startOrResumeCheckinQueue(scope);
+}
+
+export function applyBrowserSnapshot(account, snapshot = {}, options = {}) {
+  return getRuntime(readProviderId(options)).applyBrowserSnapshot(account, snapshot);
 }

@@ -8,6 +8,7 @@ import {
 } from "../utils/accountLoader.js";
 import { requireAuth } from "../utils/auth.js";
 import {
+  applyBrowserSnapshot,
   checkinAccount,
   clearDashboardCache,
   getDashboard,
@@ -506,6 +507,13 @@ router.post("/accounts/import", async (req, res, next) => {
       const accounts = mergeAccounts(existingAccounts, [directAccount]);
       const backupFile = backupAccountFile(accountFile);
       const result = saveAccounts(accounts, accountFile);
+      const importedAccount =
+        result.accounts.find((account) => account.username === directAccount.username) || directAccount;
+      const browserSnapshot =
+        req.body?.snapshot && typeof req.body.snapshot === "object" ? req.body.snapshot : null;
+      const syncedSnapshot = browserSnapshot
+        ? Boolean(applyBrowserSnapshot(importedAccount, browserSnapshot, { providerId }))
+        : false;
       clearDashboardCache({ providerId });
 
       ok(
@@ -518,6 +526,7 @@ router.post("/accounts/import", async (req, res, next) => {
           previousCount: existingAccounts.length,
           mode: "merge",
           importSource: "browser",
+          syncedSnapshot,
           usernames: result.accounts.map((account) => account.username)
         },
         `已合并导入 1 个账号，当前共 ${result.count} 个账号`
