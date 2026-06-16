@@ -494,6 +494,10 @@ function getApiKeyStorePath() {
   return path.resolve(process.cwd(), ".cache", `${provider.id}-api-keys.json`);
 }
 
+function getBrowserSnapshotStorePath() {
+  return path.resolve(process.cwd(), ".cache", `${provider.id}-browser-snapshots.json`);
+}
+
 const zonedFormatterCache = new Map();
 const zonedOffsetFormatterCache = new Map();
 
@@ -815,6 +819,75 @@ function syncApiKeyStoreFile(accounts = loadAccountsWithKeys()) {
   } catch {
     // API key persistence is only an optimization.
   }
+}
+
+function pruneBrowserSnapshotStore(store = {}, accounts = loadAccountsWithKeys()) {
+  const activeKeys = buildAccountKeySet(accounts);
+  const nextStore = {};
+
+  for (const key of activeKeys) {
+    const record = store?.[key];
+    if (record?.snapshot && typeof record.snapshot === "object") {
+      nextStore[key] = record;
+    }
+  }
+
+  return nextStore;
+}
+
+function syncBrowserSnapshotStoreFile(accounts = loadAccountsWithKeys()) {
+  try {
+    const filePath = getBrowserSnapshotStorePath();
+    if (!fs.existsSync(filePath)) return;
+    const rawStore = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const nextStore = pruneBrowserSnapshotStore(rawStore, accounts);
+    if (JSON.stringify(rawStore) !== JSON.stringify(nextStore)) {
+      fs.writeFileSync(filePath, JSON.stringify(nextStore), "utf8");
+    }
+  } catch {
+    // Browser snapshots are best-effort cached dashboard data.
+  }
+}
+
+function readBrowserSnapshotStore() {
+  try {
+    const filePath = getBrowserSnapshotStorePath();
+    if (!fs.existsSync(filePath)) return {};
+    const rawStore = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const nextStore = pruneBrowserSnapshotStore(rawStore);
+    if (JSON.stringify(rawStore) !== JSON.stringify(nextStore)) {
+      writeBrowserSnapshotStore(nextStore);
+    }
+    return nextStore;
+  } catch {
+    return {};
+  }
+}
+
+function writeBrowserSnapshotStore(store) {
+  try {
+    const filePath = getBrowserSnapshotStorePath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(pruneBrowserSnapshotStore(store)), "utf8");
+  } catch {
+    // Browser snapshots are best-effort cached dashboard data.
+  }
+}
+
+function readPersistedBrowserSnapshot(account) {
+  const key = account.key || accountCacheKey(account);
+  return readBrowserSnapshotStore()[key] || null;
+}
+
+function writePersistedBrowserSnapshot(account, snapshot, updatedAt = nowIso()) {
+  if (!account || !snapshot || typeof snapshot !== "object") return;
+  const key = account.key || accountCacheKey(account);
+  const store = readBrowserSnapshotStore();
+  store[key] = {
+    snapshot,
+    updatedAt
+  };
+  writeBrowserSnapshotStore(store);
 }
 
 function readApiKeyStore() {
@@ -1435,6 +1508,7 @@ function getAccounts() {
   pruneRuntimeCaches(accounts);
   syncSessionStoreFile(accounts);
   syncApiKeyStoreFile(accounts);
+  syncBrowserSnapshotStoreFile(accounts);
   return accounts;
 }
 
@@ -1494,7 +1568,7 @@ function setAccountState(account, nextState) {
 
 function createInitialAccountState(account) {
   const persistedApiKey = readPersistedApiKey(account);
-  return {
+  const initialState = {
     username: account.username,
     displayName: account.username,
     apiKey: persistedApiKey?.apiKey || "",
@@ -1532,6 +1606,11 @@ function createInitialAccountState(account) {
       checkinRecords: []
     }
   };
+  const persistedSnapshot = readPersistedBrowserSnapshot(account);
+  if (persistedSnapshot?.snapshot) {
+    mergeBrowserSnapshotIntoState(initialState, persistedSnapshot.snapshot, "browser-cache");
+  }
+  return initialState;
 }
 
 function ensureCurrentDayState(state, account) {
@@ -1622,10 +1701,17 @@ function buildAccountView(state, account = {}, sessionStore = null) {
     currencySymbol: state.currencySymbol || siteRates.currencySymbol,
     updatedAt: state.updatedAt,
     dataSource: {
-      checkin: state.checkin.source === "remote" ? "remote" : "cache",
+      checkin:
+        state.checkin.source === "remote"
+          ? "remote"
+          : state.checkin.source === "browser" || state.checkin.source === "browser-cache"
+            ? "browser"
+            : "cache",
       todayUsed:
         state.usage.source === "log-stat"
           ? "log-stat"
+          : state.usage.source === "browser" || state.usage.source === "browser-cache"
+            ? "browser"
           : state.usage.source === "cache"
             ? "cache"
             : "pending"
@@ -2365,22 +2451,32 @@ function applyUsageStats(state, usageStats, source = "log-stat") {
   return state;
 }
 
-function applyBrowserSnapshot(account, snapshot = {}) {
+function mergeBrowserSnapshotIntoState(state, snapshot = {}, source = "browser") {
   if (!snapshot || typeof snapshot !== "object") return null;
 
+  if (snapshot.user && typeof snapshot.user === "object") {
+    mergeBaseInfoFromUser(state, snapshot.user);
+  }
+
+  if (snapshot.usage && typeof snapshot.usage === "object") {
+    applyUsageStats(state, snapshot.usage, source);
+  }
+
+  if (snapshot.checkin && typeof snapshot.checkin === "object") {
+    applyCheckinStats(state, snapshot.checkin, source);
+  }
+
+  state.updatedAt = nowIso();
+  state.lastRemoteSyncAt = nowIso();
+  return state;
+}
+
+function applyBrowserSnapshot(account, snapshot = {}) {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  writePersistedBrowserSnapshot(account, snapshot);
+
   const state = updateAccountState(account, (nextState) => {
-    if (snapshot.user && typeof snapshot.user === "object") {
-      mergeBaseInfoFromUser(nextState, snapshot.user);
-    }
-
-    if (snapshot.usage && typeof snapshot.usage === "object") {
-      applyUsageStats(nextState, snapshot.usage, "browser");
-    }
-
-    if (snapshot.checkin && typeof snapshot.checkin === "object") {
-      applyCheckinStats(nextState, snapshot.checkin, "browser");
-    }
-
+    mergeBrowserSnapshotIntoState(nextState, snapshot, "browser");
     nextState.updatedAt = nowIso();
     nextState.lastRemoteSyncAt = nowIso();
     return nextState;
